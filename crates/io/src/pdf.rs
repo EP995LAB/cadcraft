@@ -525,6 +525,8 @@ fn content_stream(
     let mut fill: Option<Rgb> = None;
     let mut width: Option<f64> = None;
     let mut pending = false;
+    // The object whose lines the pending path holds.
+    let mut pending_handle: Option<Handle> = None;
     let flush = |c: &mut String, pending: &mut bool| {
         if *pending {
             c.push_str("S\n");
@@ -591,6 +593,13 @@ fn content_stream(
                 if pts.len() < 2 {
                     continue;
                 }
+                // Transparent objects are stroked one by one so where they overlap they build
+                // up as in PNG plots (one path is painted once). Model space seen through a
+                // viewport has no object handles: each of its lines is stroked alone.
+                if t > 0 && (pending_handle != Some(p.handle) || p.handle == cadcraft_render::VIEWPORT_CONTENT) {
+                    flush(&mut c, &mut pending);
+                }
+                pending_handle = Some(p.handle);
                 if stroke != Some(rgb) || width != Some(w) {
                     flush(&mut c, &mut pending);
                     if stroke != Some(rgb) {

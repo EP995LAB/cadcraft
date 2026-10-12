@@ -2108,3 +2108,29 @@ fn view_exports_draw_transparency() {
     assert!(svg.contains(r#"opacity="0.50""#));
     assert_ne!(write(&d, "a.png").unwrap(), write(&transparent_over_line(0), "a.png").unwrap());
 }
+
+#[test]
+fn pdf_strokes_overlapping_transparent_objects_one_by_one() {
+    // Two crossing lines, ByLayer on layer `layer_t` percent transparent.
+    let crossing = |layer_t: u8| {
+        let mut d = Drawing::new_metric();
+        d.layers.push(Layer { name: "Glass".into(), color: Color::Index(5), transparency: layer_t, ..Layer::default() });
+        let on = || Common { layer: "Glass".into(), ..Common::default() };
+        d.add(&Space::Model, on(), EntityKind::Line(Line { a: Vec3::new(0.0, 0.0, 0.0), b: Vec3::new(100.0, 100.0, 0.0) })).unwrap();
+        d.add(&Space::Model, on(), EntityKind::Line(Line { a: Vec3::new(0.0, 100.0, 0.0), b: Vec3::new(100.0, 0.0, 0.0) })).unwrap();
+        d
+    };
+    let content = |d: &Drawing, on: bool| {
+        check_pdf(&plot(d, &Space::Model, &serde_json::json!({"paper": "A4", "compress": false, "plotTransparency": on})).unwrap())
+    };
+    // 50 %: each line is its own stroke, so they build up where they cross.
+    let glass = content(&crossing(50), true);
+    assert!(glass.contains("/T50 gs"), "{glass}");
+    assert_eq!(glass.matches("S\n").count(), 2, "{glass}");
+    // Opaque: one path as before, whether the option is on or off.
+    let opaque = content(&crossing(0), true);
+    assert_eq!(opaque.matches("S\n").count(), 1, "{opaque}");
+    assert_eq!(opaque, content(&crossing(0), false));
+    // Transparency off: the transparent layer plots as before too.
+    assert_eq!(content(&crossing(50), false), opaque);
+}

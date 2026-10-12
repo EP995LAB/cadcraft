@@ -155,6 +155,12 @@ fn prims_of(list: &DisplayList, handles: &[Handle]) -> Vec<usize> {
     list.prims.iter().enumerate().filter(|(_, pr)| set.contains(&pr.handle)).map(|(i, _)| i).collect()
 }
 
+/// Build options for previews at `scale` pixels per drawing unit; `transparency` is
+/// TRANSPARENCYDISPLAY, so objects being dragged or drawn look as they will once placed.
+fn preview_options(scale: f64, transparency: bool) -> cadcraft_render::Options {
+    cadcraft_render::Options { tolerance: 0.5 / scale, min_dash: 2.0 / scale, transparency, ..Default::default() }
+}
+
 fn color32(c: Rgb) -> Color32 {
     Color32::from_rgb(c.0, c.1, c.2)
 }
@@ -435,6 +441,8 @@ fn draw_highlight_gpu(
 /// the transformed copies as egui shapes every frame was slow with heavy selections and could
 /// overflow the GPU buffer limit.
 /// `clipboard` is the session's clipboard and its serial (dragged when `drag.clipboard`, by PASTE).
+/// `transparency`: TRANSPARENCYDISPLAY (dragged objects keep their transparency).
+#[allow(clippy::too_many_arguments)]
 fn draw_drag_gpu(
     c: &mut CanvasState,
     p: &egui::Painter,
@@ -443,13 +451,14 @@ fn draw_drag_gpu(
     drag: &cadcraft_engine::Drag,
     clipboard: (&[cadcraft_doc::Entity], u64),
     bg: Rgb,
+    transparency: bool,
 ) {
     // Tessellate for a power-of-two zoom band so zooming mid-drag rebuilds only every 2x.
     let band = xf.scale.max(1e-300).log2().round() as i32;
     let key = {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (c.key, band, bg.0, bg.1, bg.2, &drag.handles).hash(&mut h);
+        (c.key, band, bg.0, bg.1, bg.2, &drag.handles, transparency).hash(&mut h);
         if drag.clipboard {
             clipboard.1.hash(&mut h);
         }
@@ -457,7 +466,7 @@ fn draw_drag_gpu(
     };
     if c.drag_key != Some(key) {
         let band_scale = 2f64.powi(band);
-        let opts = cadcraft_render::Options { tolerance: 0.5 / band_scale, min_dash: 2.0 / band_scale, ..Default::default() };
+        let opts = preview_options(band_scale, transparency);
         let list = if drag.clipboard {
             cadcraft_render::build_entities(doc, clipboard.0.iter(), &opts)
         } else {
@@ -1203,12 +1212,9 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     if let Some((drag, extra)) = drag {
         if let Ok(st) = app.session.state() {
             let serial = app.session.clipboard_source.as_ref().map_or(0, |c| c.serial);
-            draw_drag_gpu(&mut app.canvas, &painter, &xf, &st.doc, &drag, (&app.session.clipboard, serial), bg);
-            let list = cadcraft_render::build_entities(
-                &st.doc,
-                extra.iter(),
-                &cadcraft_render::Options { tolerance: 0.5 / scale, min_dash: 2.0 / scale, ..Default::default() },
-            );
+            let transparency = app.session.settings.transparency_display;
+            draw_drag_gpu(&mut app.canvas, &painter, &xf, &st.doc, &drag, (&app.session.clipboard, serial), bg, transparency);
+            let list = cadcraft_render::build_entities(&st.doc, extra.iter(), &preview_options(scale, transparency));
             draw_list(&painter, &xf, &list, bg, false);
         }
     } else if let (Some(c), true) = (app.canvas.cursor, app.session.running.is_some()) {
@@ -1216,11 +1222,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         if !ents.is_empty()
             && let Ok(st) = app.session.state()
         {
-            let list = cadcraft_render::build_entities(
-                &st.doc,
-                ents.iter(),
-                &cadcraft_render::Options { tolerance: 0.5 / scale, min_dash: 2.0 / scale, ..Default::default() },
-            );
+            let list = cadcraft_render::build_entities(&st.doc, ents.iter(), &preview_options(scale, app.session.settings.transparency_display));
             draw_list(&painter, &xf, &list, bg, false);
         }
     }
@@ -1762,6 +1764,30 @@ mod tests {
 
     fn hs(v: &[u64]) -> Vec<Handle> {
         v.iter().map(|&h| Handle(h)).collect()
+    }
+
+    /// A dragged object keeps its transparency in the GPU preview when TRANSPARENCYDISPLAY is
+    /// on, and is opaque when it is off.
+    #[test]
+    fn dragged_objects_keep_their_transparency() {
+        let mut d = cadcraft_doc::Drawing::new_metric();
+        let common = cadcraft_doc::Common { transparency: cadcraft_doc::Transparency::Percent(50), ..Default::default() };
+        let line = cadcraft_doc::Line { a: cadcraft_geom::Vec3::ZERO, b: cadcraft_geom::Vec3::new(10.0, 0.0, 0.0) };
+        let h = d.add(&cadcraft_doc::Space::Model, common, cadcraft_doc::EntityKind::Line(line)).unwrap();
+        let drag = cadcraft_engine::Drag { handles: vec![h], matrix: cadcraft_geom::Mat3::IDENTITY, extra: Vec::new(), clipboard: false };
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 100.0));
+        let xf = Xf { rect, center: Vec2::new(5.0, 0.0), scale: 10.0 };
+        let painter = egui::Painter::new(egui::Context::default(), egui::LayerId::background(), rect);
+        let alpha = |transparency: bool| {
+            let mut c = CanvasState::default();
+            draw_drag_gpu(&mut c, &painter, &xf, &d, &drag, (&[], 0), Rgb(0, 0, 0), transparency);
+            let mesh = c.drag_slot.lock().unwrap().take().unwrap();
+            // The first line vertex's colour alpha (after its 2 × f32 position).
+            mesh.lines[11]
+        };
+        assert_eq!(alpha(true), 128);
+        assert_eq!(alpha(false), 255);
+        assert!(preview_options(2.0, true).transparency && !preview_options(2.0, false).transparency);
     }
 
     #[test]

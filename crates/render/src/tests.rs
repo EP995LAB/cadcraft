@@ -694,3 +694,70 @@ fn transparent_solid_hatch_blends_with_the_line_under_it() {
     // Transparency off: the hatch hides the line, as before.
     assert_eq!(pixel(&Options::default(), 1.0, 2.025), (255, 0, 0));
 }
+
+fn attrib(tag: &str) -> cadcraft_doc::Attrib {
+    cadcraft_doc::Attrib {
+        tag: tag.into(),
+        text: cadcraft_doc::Text {
+            insert: Vec3::new(1.0, 1.0, 0.0),
+            align_pt: None,
+            height: 1.0,
+            value: "A1".into(),
+            rotation: 0.0,
+            width_factor: 1.0,
+            oblique: 0.0,
+            style: "Standard".into(),
+            halign: Default::default(),
+            valign: Default::default(),
+        },
+        invisible: false,
+        constant: false,
+        prompt: String::new(),
+        props: Default::default(),
+    }
+}
+
+/// A block "B" with a line (layer 0, ByLayer) and an attribute definition with `def`'s
+/// properties, and a reference to it with `reference`'s, carrying the attribute.
+fn attributed(def: Common, reference: Common) -> Drawing {
+    let mut d = Drawing::new_imperial();
+    let mut blk = cadcraft_doc::Block::new("B");
+    let (c, k) = line_common(Common::default());
+    blk.entities.push(block_entity(1, c, k));
+    blk.entities.push(block_entity(2, def, EntityKind::AttDef(attrib("TAG"))));
+    d.blocks.insert("B".into(), std::sync::Arc::new(blk));
+    let EntityKind::Insert(mut ins) = insert_of("B") else { panic!("an insert") };
+    ins.attribs.push(attrib("TAG"));
+    d.add(&Space::Model, reference, EntityKind::Insert(ins)).unwrap();
+    d
+}
+
+/// The transparency of the block's line and of the attribute's text, from a list built with
+/// transparency on (the line is drawn first, then the text).
+fn line_and_text(d: &Drawing) -> (u8, Vec<u8>) {
+    let l = build(d, &Space::Model, &with_transparency());
+    let (first, rest) = l.prims.split_first().unwrap();
+    assert!(!rest.is_empty(), "the attribute is drawn");
+    (first.transparency, rest.iter().map(|p| p.transparency).collect())
+}
+
+#[test]
+fn attributes_draw_with_their_own_transparency() {
+    use cadcraft_doc::Transparency::{ByBlock, Percent};
+    // A reference at 60 % on an opaque layer: layer-0 ByLayer contents (the line and the
+    // attribute) take the reference's layer, so both are opaque.
+    let d = attributed(Common::default(), Common { transparency: Percent(60), ..Default::default() });
+    let (line, text) = line_and_text(&d);
+    assert_eq!(line, 0);
+    assert!(text.iter().all(|t| *t == 0), "{text:?}");
+    // An attribute definition with its own 50 % in an opaque reference.
+    let d = attributed(Common { transparency: Percent(50), ..Default::default() }, Common::default());
+    let (line, text) = line_and_text(&d);
+    assert_eq!(line, 0);
+    assert!(text.iter().all(|t| *t == 50), "{text:?}");
+    // ByBlock follows the reference.
+    let d = attributed(Common { transparency: ByBlock, ..Default::default() }, Common { transparency: Percent(30), ..Default::default() });
+    assert!(line_and_text(&d).1.iter().all(|t| *t == 30));
+    // Off: everything opaque.
+    assert!(build(&d, &Space::Model, &Options::default()).prims.iter().all(|p| p.transparency == 0));
+}

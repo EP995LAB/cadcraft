@@ -833,12 +833,16 @@ fn take_viewport_layers(list: &mut DisplayList) {
     }
 }
 
-fn resolve(ctx: &Ctx, e: &Entity, plotting: bool) -> (Ink, f32, Option<cadcraft_doc::Linetype>, f64, bool) {
+/// An object's colour, lineweight (mm), linetype, linetype scale, visibility and the transparency
+/// of the layer it is drawn on (for ByLayer, see [`transparency`]).
+type Resolved = (Ink, f32, Option<cadcraft_doc::Linetype>, f64, bool, u8);
+
+fn resolve(ctx: &Ctx, e: &Entity, plotting: bool) -> Resolved {
     resolve_common(ctx, &e.common, plotting)
 }
 
 /// [`resolve`] for an object's properties `c`.
-fn resolve_common(ctx: &Ctx, c: &cadcraft_doc::Common, plotting: bool) -> (Ink, f32, Option<cadcraft_doc::Linetype>, f64, bool) {
+fn resolve_common(ctx: &Ctx, c: &cadcraft_doc::Common, plotting: bool) -> Resolved {
     let d = ctx.d;
     // Layer "0" inside a block takes the insert's layer.
     let layer_name = if c.layer == "0" { ctx.block_layer.as_deref().unwrap_or("0") } else { c.layer.as_str() };
@@ -863,20 +867,18 @@ fn resolve_common(ctx: &Ctx, c: &cadcraft_doc::Common, plotting: bool) -> (Ink, 
     };
     let lt = d.linetype(&lt_name).filter(|l| !l.pattern.is_empty()).cloned();
     let scale = d.header.f64("LTSCALE", 1.0) * c.ltscale * ctx.lt_factor;
-    (rgb, lw_mm, lt, scale, visible)
+    (rgb, lw_mm, lt, scale, visible, layer.map_or(0, |l| l.transparency))
 }
 
-/// The transparency (percent, 0..=90) an object with properties `c` draws with: its own, its
-/// layer's when ByLayer (layer 0 inside a block: the block reference's layer), the block
-/// reference's when ByBlock (opaque outside blocks).
-fn transparency(ctx: &Ctx, c: &cadcraft_doc::Common) -> u8 {
-    let t = match c.transparency {
+/// The transparency (percent, 0..=90) of an object whose own setting is `t`: the percentage, its
+/// layer's `layer` when ByLayer (layer 0 inside a block: the block reference's layer, as
+/// [`resolve_common`] finds it), the block reference's `block` when ByBlock (opaque outside
+/// blocks).
+fn transparency(t: cadcraft_doc::Transparency, layer: u8, block: u8) -> u8 {
+    let t = match t {
         cadcraft_doc::Transparency::Percent(p) => p,
-        cadcraft_doc::Transparency::ByBlock => ctx.block_transparency,
-        cadcraft_doc::Transparency::ByLayer => {
-            let name = if c.layer == "0" { ctx.block_layer.as_deref().unwrap_or("0") } else { c.layer.as_str() };
-            ctx.d.layer(name).map_or(0, |l| l.transparency)
-        }
+        cadcraft_doc::Transparency::ByBlock => block,
+        cadcraft_doc::Transparency::ByLayer => layer,
     };
     t.min(MAX_TRANSPARENCY)
 }
@@ -895,11 +897,10 @@ fn entity(b: &mut Builder, ctx: &Ctx, e: &Entity) {
     if ctx.d.is_hidden_object(e.handle) {
         return;
     }
-    // The entity's named plot style and transparency, for everything it draws (block contents
-    // set their own).
+    // The entity's named plot style and transparency (set by `entity_parts`), for everything it
+    // draws (block contents set their own).
     let (saved, saved_transparency) = (b.named, b.transparency);
     b.named = b.styles.and_then(|s| s.named_index(ctx, &e.common));
-    b.transparency = if b.opts.transparency { transparency(ctx, &e.common) } else { 0 };
     entity_parts(b, ctx, e);
     b.named = saved;
     b.transparency = saved_transparency;
@@ -937,9 +938,12 @@ fn entity_parts(b: &mut Builder, ctx: &Ctx, e: &Entity) {
             cadcraft_doc::AnnoDraw::Plain => {}
         }
     }
-    let (rgb, lw, lt, ltscale, visible) = resolve(ctx, e, b.plotting);
+    let (rgb, lw, lt, ltscale, visible, layer_transparency) = resolve(ctx, e, b.plotting);
     if !visible {
         return;
+    }
+    if b.opts.transparency {
+        b.transparency = transparency(e.common.transparency, layer_transparency, ctx.block_transparency);
     }
     // A plot style's linetype replaces the object's.
     let lt = match b.styles.and_then(|s| s.linetype(rgb, b.named)) {
@@ -993,7 +997,7 @@ fn entity_parts(b: &mut Builder, ctx: &Ctx, e: &Entity) {
             if let Some(blk) = dm.block.as_ref().and_then(|n| ctx.d.block(n))
                 && ctx.depth < cadcraft_doc::MAX_BLOCK_DEPTH
             {
-                let sub = Ctx { block_pstyle: b.named, ..sub_ctx(ctx, e, Mat3::IDENTITY) };
+                let sub = Ctx { block_pstyle: b.named, block_transparency: b.transparency, ..sub_ctx(ctx, e, Mat3::IDENTITY) };
                 for be in blk.entities.iter() {
                     if !b.expand() {
                         break;
@@ -1365,7 +1369,6 @@ fn sub_ctx<'a>(ctx: &Ctx<'a>, e: &Entity, m: Mat3) -> Ctx<'a> {
         "bylayer" => ctx.d.layer(layer.as_deref().unwrap_or("0")).map(|l| l.linetype.clone()).unwrap_or_else(|| "Continuous".into()),
         _ => e.common.linetype.clone(),
     };
-    let block_transparency = transparency(ctx, &e.common);
     Ctx {
         d: ctx.d,
         xf: ctx.xf.then_before(m),
@@ -1379,7 +1382,8 @@ fn sub_ctx<'a>(ctx: &Ctx<'a>, e: &Entity, m: Mat3) -> Ctx<'a> {
         vp_colors: ctx.vp_colors,
         lt_factor: ctx.lt_factor,
         block_pstyle: ctx.block_pstyle,
-        block_transparency,
+        // The reference's own, set by the caller (`Builder::transparency` while it draws).
+        block_transparency: ctx.block_transparency,
     }
 }
 
@@ -1397,7 +1401,7 @@ fn insert(b: &mut Builder, ctx: &Ctx, e: &Entity, ins: &cadcraft_doc::Insert, rg
                 }
                 let off = Vec2::new(ins.col_spacing * f64::from(c), ins.row_spacing * f64::from(r)).rotate(ins.rotation);
                 let m = Mat3::translate(off).then_before(ins.transform(blk.base.xy()));
-                let sub = Ctx { block_pstyle: b.named, ..sub_ctx(ctx, e, m) };
+                let sub = Ctx { block_pstyle: b.named, block_transparency: b.transparency, ..sub_ctx(ctx, e, m) };
                 for be in blk.entities.iter() {
                     // Constant/visible attribute definitions inside blocks are not drawn; attribs are.
                     if matches!(be.kind, EntityKind::AttDef(_)) {
@@ -1414,6 +1418,8 @@ fn insert(b: &mut Builder, ctx: &Ctx, e: &Entity, ins: &cadcraft_doc::Insert, rg
     if b.opts.text {
         // ATTMODE (ATTDISP): 0 shows no attributes, 1 the visible ones, 2 all of them.
         let attmode = ctx.d.header.i64("ATTMODE", 1);
+        // The reference's transparency; each attribute draws with its own.
+        let reference = b.transparency;
         for a in &ins.attribs {
             if attmode == 0 || (a.invisible && attmode != 2) {
                 continue;
@@ -1423,24 +1429,33 @@ fn insert(b: &mut Builder, ctx: &Ctx, e: &Entity, ins: &cadcraft_doc::Insert, rg
             // on insertion), except those set on the attribute itself: ByBlock = the reference's,
             // layer 0 = the reference's layer.
             let def = ctx.d.block(&ins.block).and_then(|blk| blk.entities.iter().find(|be| attdef_tag(be, &a.tag)));
-            let (ink, lw, shown) = match (def, a.props.is_empty()) {
-                (None, true) => (rgb, resolve(ctx, e, b.plotting).1, true),
+            let (ink, lw, shown, t) = match (def, a.props.is_empty()) {
+                (None, true) => (rgb, resolve(ctx, e, b.plotting).1, true, reference),
                 (def, _) => {
                     let c = a.props.over(&def.map(|d| d.common.clone()).unwrap_or_else(by_block));
-                    let (ink, lw, _, _, shown) = resolve_common(&sub_ctx(ctx, e, Mat3::IDENTITY), &c, b.plotting);
-                    (ink, lw, shown)
+                    let (ink, lw, _, _, shown, layer_t) = resolve_common(&sub_ctx(ctx, e, Mat3::IDENTITY), &c, b.plotting);
+                    let t = if b.opts.transparency { transparency(c.transparency, layer_t, reference) } else { 0 };
+                    (ink, lw, shown, t)
                 }
             };
             if shown {
+                b.transparency = t;
                 b.shaped(ctx, ink, if b.opts.lineweights { lw } else { 0.0 }, &sh);
             }
         }
+        b.transparency = reference;
     }
 }
 
 /// Properties that follow the block reference's (an attribute without a definition).
 fn by_block() -> cadcraft_doc::Common {
-    cadcraft_doc::Common { color: Color::ByBlock, linetype: "ByBlock".into(), lineweight: Lineweight::ByBlock, ..cadcraft_doc::Common::default() }
+    cadcraft_doc::Common {
+        color: Color::ByBlock,
+        linetype: "ByBlock".into(),
+        lineweight: Lineweight::ByBlock,
+        transparency: cadcraft_doc::Transparency::ByBlock,
+        ..cadcraft_doc::Common::default()
+    }
 }
 
 /// The attribute definition with tag `tag` (any case).
