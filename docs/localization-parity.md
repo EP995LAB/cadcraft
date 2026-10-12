@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-11 · **Change:** minor (Czech catalog added: reference/literal coverage, Czech plurals and menu headings) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (Italian catalog added: reference/literal coverage, Italian AutoCAD menu names, one/other plurals) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
 
 How far CADCraft's interface and drawing text are from AutoCAD's languages. Summarised in
 [ROADMAP.md](../ROADMAP.md#languages); work items in [gaps.md](gaps.md#localization).
@@ -66,11 +66,12 @@ plus native review by a human; extending the catalog to the remaining English-on
 | Vietnamese | vi | 0 (0%) | 0% | Latin with stacked diacritics: renders per code point, untested | no | none | 3–5 h |
 | Ukrainian | uk | 989 catalog rows (≈ 100% of the catalog; ≈ 80% of all UI strings, estimated: engine diagnostics and uncatalogued text stay English) | dialogs and tooltips yes; command reference searchable in Ukrainian | Cyrillic: yes (bundled egui fonts) | translated by a contributor; no second review | partial | 2–4 h |
 | Czech | cs | 1,202 catalog rows; reference catalog and marked UI literals covered | dialogs and tooltips yes; contextual menu headings; command reference searchable in Czech | Latin: yes (bundled egui proportional and monospace fonts; Czech letters and quotes tested) | AI-assisted by @Losminek; independent review pass; not yet proofread by a native speaker | complete current catalog; English-only interface gaps remain | native review + shared English-only UI work |
+| Italian | it | 1,230 catalog rows; reference catalog and marked UI literals covered (no gaps reported) | dialogs and tooltips yes; command reference searchable in Italian; dialogs without marked literals (Plot, Page Setup, the style managers) stay English, as in every language | Latin: yes (bundled egui proportional and monospace fonts; accented letters tested) | AI-assisted by @EP995LAB; menu and command labels use the Italian AutoCAD names, other strings written from CADCraft's English; independent review pass; not yet proofread by a native speaker | complete current catalog; English-only interface gaps remain | native review + shared English-only UI work |
 
-Other languages shipped: Ukrainian, Brazilian Portuguese, German, Czech, Russian and French. Czech covers the
-reference catalog and marked UI literals; engine diagnostics and uncatalogued text remain English. AutoCAD for Mac ships 7
-non-English languages (zh-Hans, es, fr, ja, de, ko, it); of those, CADCraft now ships German,
-and additionally Ukrainian, which AutoCAD for Mac doesn't ship.
+Other languages shipped: Ukrainian, Brazilian Portuguese, German, Czech, Russian, French and Italian. Czech and
+Italian cover the reference catalog and marked UI literals; engine diagnostics and uncatalogued text remain English. AutoCAD for Mac ships 7
+non-English languages (zh-Hans, es, fr, ja, de, ko, it); of those, CADCraft now ships German and
+Italian, and additionally Ukrainian, which AutoCAD for Mac doesn't ship.
 
 **Total to put all twelve at `full`:** about 55–95 Opus 5.5 hours (catalog extension 4–6 h,
 ten translations 30–50 h, complex-script shaping and RTL 30–45 h), plus native-speaker review for
@@ -80,6 +81,7 @@ each language, which needs humans. Translations parallelise fully once the catal
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-12 | minor | Italian added: 1,230 rows (no reported gaps); menu and command labels use the names of the Italian AutoCAD interface, other strings written from CADCraft's English; one/other plurals, three `menu` headings; locale/preferences/render/font tests; independent review pass; native proofreading pending |
 | 2026-10-11 | minor | Czech added: 1,202 rows, one/few/other plurals, locale/preferences/menu/font/render tests; independent review pass; native proofreading pending |
 | 2026-10-11 | minor | German catalog landed: `de` preference and catalog, per-language plural rules; non-English languages 1 → 2; total hours 60–100 → 55–95 |
 | 2026-10-10 | minor | Right-to-left drawing text: bidi and Arabic-script shaping in TEXT and MTEXT (#287) |

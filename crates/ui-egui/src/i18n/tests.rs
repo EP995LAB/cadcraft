@@ -39,7 +39,7 @@ fn catalog_is_valid_and_preserves_placeholders_and_ellipses() {
 /// to English for what they don't cover yet; their gaps are reported, not enforced, so adding a
 /// command doesn't require a row in every language.
 const REQUIRED: &[&str] = &["uk"];
-const REPORTED: &[&str] = &["pt-BR", "de", "es", "cs", "ru", "fr", "zh"];
+const REPORTED: &[&str] = &["pt-BR", "de", "es", "cs", "ru", "fr", "zh", "it"];
 
 fn check(language: &str, what: &str, missing: Vec<String>) {
     if REQUIRED.contains(&language) {
@@ -540,4 +540,122 @@ fn chinese_needs_an_installed_cjk_font() {
     if font.is_none() {
         assert!(app.status.as_ref().is_some_and(|(s, _)| s.contains("No Chinese font")));
     }
+}
+
+#[test]
+fn italian_locales_preferences_and_plural_forms() {
+    for tag in ["it", "it-IT", "it_IT.UTF-8", "IT-ch", " it-CH ", "it_IT@euro"] {
+        assert_eq!(locale_language(tag), Some("it"), "{tag}");
+    }
+    for tag in ["ita", "item", "i", "id-ID"] {
+        assert_eq!(locale_language(tag), None, "{tag}");
+    }
+    assert_eq!(Preference::parse("it"), Some(Preference::Italian));
+    assert_eq!(Preference::Italian.name(), "Italiano");
+    assert_eq!(Preference::Italian.resolve(&["en-US".into()]), "it");
+    assert_eq!(Preference::Auto.resolve(&["pl-PL".into(), "it-IT".into(), "en-US".into()]), "it");
+    let mut app = CadApp::new(Session::new(), Services::default());
+    app.ui.interface_language = Preference::Italian;
+    let mut restored = CadApp::new(Session::new(), Services::default());
+    restored.load_prefs(&app.prefs_json());
+    assert_eq!(restored.ui.interface_language, Preference::Italian);
+    with_language("it", || {
+        for (n, contributor, commit) in [
+            (0, "collaboratori", "commit"),
+            (1, "collaboratore", "commit"),
+            (2, "collaboratori", "commit"),
+            (11, "collaboratori", "commit"),
+            (21, "collaboratori", "commit"),
+            (u64::MAX, "collaboratori", "commit"),
+        ] {
+            assert_eq!(count(n, "{n} contributor", "{n} contributors"), format!("{n} {contributor}"));
+            assert_eq!(count(n, "{n} commit", "{n} commits"), format!("{n} {commit}"));
+        }
+        assert_eq!(t("Layers"), "Layer");
+        assert_eq!(menu("Edit"), "Modifica");
+        // As in the Italian AutoCAD menu bar, the Edit and Modify menus are both "Modifica".
+        assert_eq!(menu("Modify"), "Modifica");
+        assert_eq!(t("Modify"), "Modifica");
+        // Three menu headings differ from their command, object, tool-group or tooltip label.
+        assert_eq!(menu("Dimension"), "Quotatura");
+        assert_eq!(t("Dimension"), "Quota");
+        assert_eq!(menu("View"), "Visualizza");
+        assert_eq!(t("View"), "Vista");
+        assert_eq!(menu("Help"), "?");
+        assert_eq!(t("Help"), "Aiuto");
+        assert_eq!(t("Leader"), "Direttrice");
+        for source in crate::menus::MENUS.iter().filter(|m| !["Dimension", "View", "Help"].contains(*m)) {
+            assert_eq!(menu(source), t(source), "{source}");
+        }
+        assert_eq!(format("Current: {color}", &[("color", "{n} Open".into())]), "Corrente: {n} Open");
+        assert_eq!(format("Height: {height}", &[("height", "{n}".into())]), "Altezza: {n}");
+    });
+}
+
+#[test]
+fn live_italian_switch_preserves_drawing_command_and_saved_choice() {
+    let mut app = CadApp::new(Session::new(), Services::default());
+    app.ui.in_window_menu = true;
+    app.session.state_mut().unwrap().title = "Open".into();
+    let ctx = egui::Context::default();
+    app.logic(&ctx);
+    assert!(render(&mut app, &ctx).contains("Properties"));
+    app.start("line");
+    let prompt = crate::control::cmdline_state(&app);
+    let commands = crate::control::all_commands(&app);
+    app.run("ui.language", json!({"lang":"it"})).unwrap();
+    let text = render(&mut app, &ctx);
+    for label in ["Proprietà", "File", "Modifica", "Visualizza", "Disegna", "Quotatura", "Finestra", "Specificare il primo punto"] {
+        assert!(text.contains(label), "missing {label}: {text}");
+    }
+    assert_eq!(app.language(), "it");
+    assert_eq!(app.session.state().unwrap().title, "Open");
+    assert_eq!(crate::control::cmdline_state(&app), prompt);
+    assert_eq!(crate::control::all_commands(&app), commands);
+    assert_eq!(t("Properties"), "Properties", "language must not leak out of the render scope");
+    app.run("ui.resetpalettes", json!({})).unwrap();
+    assert_eq!(app.language(), "it");
+    app.run("ui.language", json!({"lang":"en"})).unwrap();
+    assert!(render(&mut app, &ctx).contains("Properties"));
+}
+
+#[test]
+fn italian_dialogs_render_with_stable_ids() {
+    for (dialog, heading) in [
+        ("dsettings", "Impostazioni disegno"),
+        ("about", "Informazioni su CADCraft"),
+        ("commands", "Guida ai comandi"),
+        ("blocks", "Blocchi"),
+        ("layers", "Gestione proprietà layer"),
+        ("qselect", "Selezione rapida"),
+        ("parameters", "Gestione parametri"),
+        ("language", "Lingua dell'interfaccia"),
+        ("options:preferences", "Preferenze utente"),
+    ] {
+        let mut app = CadApp::new(Session::new(), Services::default());
+        app.ui.interface_language = Preference::Italian;
+        app.ui.dialog = Some(dialog.into());
+        let ctx = egui::Context::default();
+        app.logic(&ctx);
+        let text = render(&mut app, &ctx);
+        assert!(text.contains(heading), "{dialog}: {text}");
+        assert_eq!(app.ui.dialog.as_deref(), Some(dialog));
+    }
+}
+
+#[test]
+fn default_fonts_cover_every_italian_accented_letter_in_the_catalog() {
+    let ctx = egui::Context::default();
+    let mut output = ctx.run_ui(Default::default(), |_| {});
+    output.textures_delta.clear();
+    let mut letters: BTreeSet<_> = include_str!("it.tsv").chars().filter(|c| ('\u{00c0}'..='\u{00ff}').contains(c)).collect();
+    letters.extend("àèéìíòóùúÀÈÉÌÒÙ".chars());
+    ctx.fonts_mut(|view| {
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            let mut font = view.fonts.font(&family);
+            for c in &letters {
+                assert!(font.characters().contains_key(c), "missing {c} in {family:?}");
+            }
+        }
+    });
 }

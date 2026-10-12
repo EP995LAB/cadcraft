@@ -1,7 +1,8 @@
 # Interface languages
 
 Choose **Edit → Interface Language** and select **Auto (system language)**, **English**,
-**Українська**, **Português (Brasil)**, **Deutsch**, **Español**, or **Čeština** (Czech).
+**Українська**, **Português (Brasil)**, **Deutsch**, **Español**, **Čeština** (Czech), **Русский**,
+**Français**, **简体中文** (with an installed CJK font), or **Italiano** (Italian).
 The interface updates without restarting, including the native macOS menus.
 The choice is saved with the other interface preferences (`cadcraft.prefs`, beside the theme):
 eframe storage on the desktop, browser local storage on the web. Installations without a saved
@@ -10,7 +11,8 @@ choice use Auto.
 Auto uses the first supported language in the operating system's preferred locales, or the
 browser's `navigator.languages` on the web. BCP 47 and POSIX tags select their primary language:
 `uk-UA` → `uk`, `de_AT.UTF-8` → `de`, `es-MX` → `es`, `pt_BR.UTF-8` → `pt-BR`,
-`cs-CZ` and `cs_CZ.UTF-8` → `cs`. Unsupported languages fall back to English.
+`cs-CZ` and `cs_CZ.UTF-8` → `cs`, `it-IT` and `it_CH.UTF-8` → `it`. Unsupported languages fall
+back to English.
 Set `CADCRAFT_LOCALE=cs-CZ` to override the desktop's locale for a launch.
 An explicit saved language choice takes precedence over that override.
 
@@ -21,8 +23,8 @@ Automation can select the language through the existing control channel:
 ```
 
 The `ui.set` method also accepts `{"interfaceLanguage":"cs"}`. Supported values are `auto`,
-`en`, `uk`, `pt-BR`, `de`, `es`, and `cs`; invalid values are rejected without changing the current
-selection. Resetting palettes keeps the language choice.
+`en`, `uk`, `pt-BR`, `de`, `es`, `cs`, `ru`, `fr`, `zh`, and `it`; invalid values are rejected without
+changing the current selection. Resetting palettes keeps the language choice.
 
 ## Translation coverage
 
@@ -38,6 +40,17 @@ labels: **Zobrazení / Pohled**, **Kreslení / Kreslit**, **Kótování / Kóta*
 The translation is AI-assisted work by @Losminek, reviewed against Czech desktop and CAD UI
 conventions and an independent review pass; it has not yet been proofread by a native speaker.
 
+Italian has 1,230 catalog rows, covering the reference catalog and every marked UI literal,
+including Options. Menu headings, menu items and command labels found in the Italian AutoCAD menus
+use the names of the Italian AutoCAD interface, as the English labels follow AutoCAD's English
+names; the other strings were written from CADCraft's English strings. As in the Italian AutoCAD
+menu bar, the Edit and Modify menus are both **Modifica**, and three `menu` entries name the
+Dimension menu **Quotatura** (object and command label **Quota**), the View menu **Visualizza**
+(label **Vista**) and the Help menu **?** (tooltip **Aiuto**).
+Typed commands, command keywords and the WCS/UCS acronyms keep their English spelling. The
+translation is AI-assisted work by @EP995LAB with an independent review pass; it has not yet been
+proofread by a native speaker.
+
 Drawing titles, layer/layout/block/style names, parameter names and expressions, text in a
 drawing, and command-line input are user data and retain their original spelling. Clickable
 command keywords retain their English spelling so the text shown matches the input accepted
@@ -45,8 +58,9 @@ by the engine. CLI/MCP/control responses, engine diagnostics and command history
 English. Uncatalogued text also falls back to English. Number formatting and the operating
 system's own file-picker controls follow the existing behavior.
 
-The bundled egui fonts cover Ukrainian (`Ґґ Єє Іі Її`), German (`ÄÖÜ äöü ß`), and Czech
-(`ÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ áčďéěíňóřšťúůýž`, including typographic quotes `„…“`).
+The bundled egui fonts cover Ukrainian (`Ґґ Єє Іі Її`), German (`ÄÖÜ äöü ß`), Czech
+(`ÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ áčďéěíňóřšťúůýž`, including typographic quotes `„…“`), and Italian
+(`àèéìíòóùú ÀÈÉÌÒÙ`).
 The translations add no font assets and work on the web without system fonts.
 
 ## Adding translations
@@ -62,7 +76,8 @@ The implementation follows the display-time catalog pattern used by
   without one, the ordinary translation is used.
 - `@plural` entries hold the language's forms for integer counts: Ukrainian `one|few|many`,
   German and Spanish `one|other`, Brazilian Portuguese `one|other` (0 and 1 are `one`),
-  Czech `one|few|other` (1; 2–4; everything else, including 0, 11, 21 and 22).
+  Czech `one|few|other` (1; 2–4; everything else, including 0, 11, 21 and 22), Italian `one|other`
+  (1; everything else, including 0).
   The API takes `u64`, so fractional counts are not accepted.
 - Register a new catalog in `i18n::LANGUAGES`, add its preference variant and code/name,
   and set its integer plural rule and form count on the `Language` row.
