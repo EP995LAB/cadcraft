@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (Properties Inspector shows block insertion X, Y and stored Z) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (selection highlighted in the selection colour; Options ▸ Selection laid out as AutoCAD's) · **Target:** Autodesk AutoCAD 2027 for Mac (26.0)
 
 How CADCraft's interaction compares with AutoCAD's: point entry, object snaps, tracking, dynamic
 input, grips, selection, the command line, chrome and navigation. A drafter's speed in AutoCAD
@@ -118,22 +118,22 @@ down-arrow options menu (DYNPROMPT), and DYNDIM.
 | Multifunctional grip hover menus (Add Vertex, Remove Vertex, Convert to Arc, Lengthen …) | yes | **no** |
 | Grip dimensional input (length/angle fields) | yes | no |
 | Dynamic block grips | yes | no (no dynamic blocks) |
-| Grip appearance (GRIPSIZE, colours, hover) | yes | GRIPSIZE honoured |
+| Grip appearance (GRIPSIZE, colours, hover) | yes | GRIPSIZE, GRIPS and GRIPOBJLIMIT honoured (Options ▸ Selection); no grip colours |
 
 ## Selection (≈ 40%)
 
 | Feature | AutoCAD | CADCraft |
 |---|---|---|
-| Pick, implied window (left→right) and crossing (right→left) | yes | yes, coloured and dashed rectangles (`lib.rs:576-589`, `canvas.rs:823-836`) |
+| Pick, implied window (left→right) and crossing (right→left) | yes | yes, coloured and dashed rectangles (`lib.rs:576-589`, `canvas.rs:823-836`), filled as SELECTIONAREA, WINDOWAREACOLOR, CROSSINGAREACOLOR and SELECTIONAREAOPACITY say (Visual Effect Settings) |
 | Keywords W, C, WP, CP, F, BOX, AU, SI, M, G (group), CL (class) | yes | yes except CLass: W, C, F, WP, CP (#226); BOX, AUto, SIngle, Multiple, Group, Add, Remove, Undo (#428); ALL, Last, Previous |
 | Press-drag selection windows (PICKDRAG) | yes | yes (#63, PICKDRAG = 2) |
 | Lasso | yes | **no** |
 | Selection cycling (SELECTIONCYCLING) | yes | toggle nothing reads |
-| Selection preview, hover highlight | yes | hover highlight |
+| Selection preview, hover highlight | yes | selected and hovered objects redrawn in the selection colour, fills half see-through (SELECTIONEFFECT 1; 0 dashed), selection effect color; HIGHLIGHT (not saved), SELECTIONPREVIEW, PREVIEWEFFECT, PREVIEWFILTER (Visual Effect Settings) |
 | PICKADD, PICKFIRST, PICKAUTO | yes | PICKADD (Shift), PICKFIRST |
 | QSELECT, SELECTSIMILAR, FILTER | yes | QSELECT dialog; SELECTSIMILAR with SELECTSIMILARMODE (#428, SEttings asks for the bit code; no dialog); no FILTER |
 | Object isolate/hide (ISOLATEOBJECTS, HIDEOBJECTS) | yes | yes, temporary (OBJECTISOLATIONMODE 0; #428): Tools > Isolate, UNISOLATEOBJECTS; no status-bar button |
-| Groups selectable as one (PICKSTYLE) | yes | no |
+| Groups selectable as one (PICKSTYLE) | yes | yes (PICKSTYLE 1, #417), Object grouping on Options ▸ Selection; associative hatch selection (bit 2) is stored, not used |
 
 ## Command line (≈ 60%)
 
@@ -201,6 +201,7 @@ down-arrow options menu (DYNPROMPT), and DYNDIM.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-12 | minor | Selected and hovered objects redrawn in the selection colour (text and arrowheads included); Options ▸ Selection laid out as AutoCAD's: Object grouping, Show grips, grip object limit, selection preview, Visual Effect Settings (selection area, preview filter) |
 | 2026-10-12 | minor | Block references now show their stored insertion X/Y/Z in the Properties Inspector, including nonzero Z; fields are read-only |
 | 2026-10-11 | minor | Isometric drafting (#556): isometric snap and grid, ISODRAFT, ISOPLANE (F5), ortho along isoplane axes, ELLIPSE Isocircle |
 | 2026-10-11 | minor | Object snap tracking, Extension, Parallel, Apparent Intersection, additional polar angles (#379): tracking 30% → 70%, object snaps 40% → 45%; total 43% → 48% |
