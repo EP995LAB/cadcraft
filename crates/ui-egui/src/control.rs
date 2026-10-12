@@ -433,7 +433,8 @@ pub fn handle(app: &mut CadApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
             let w = f("width").unwrap_or(1600.0).clamp(16.0, 8192.0) as u32;
             let h = f("height").unwrap_or(1000.0).clamp(16.0, 8192.0) as u32;
             let Ok(st) = app.session.state() else { return err("no drawing") };
-            let list = cadcraft_render::build(&st.doc, &st.space, &cadcraft_render::Options::default());
+            let opts = cadcraft_render::Options { transparency: app.session.settings.transparency_display, ..Default::default() };
+            let list = cadcraft_render::build(&st.doc, &st.space, &opts);
             let v = st.view();
             let fit = p.get("fit").and_then(Value::as_bool).unwrap_or(true);
             let view = render_view(&list.bounds, v.center, v.height, fit, w, h);

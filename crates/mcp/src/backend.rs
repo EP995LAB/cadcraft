@@ -207,7 +207,8 @@ impl Backend for Headless {
                 let w = p.get("width").and_then(Value::as_f64).unwrap_or(1600.0).clamp(16.0, 8192.0) as u32;
                 let h = p.get("height").and_then(Value::as_f64).unwrap_or(1000.0).clamp(16.0, 8192.0) as u32;
                 let st = s.state().map_err(|e| e.to_string())?;
-                let list = cadcraft_render::build(&st.doc, &st.space, &cadcraft_render::Options::default());
+                let opts = cadcraft_render::Options { transparency: s.settings.transparency_display, ..Default::default() };
+                let list = cadcraft_render::build(&st.doc, &st.space, &opts);
                 let fit = p.get("fit").and_then(Value::as_bool).unwrap_or(true);
                 let view = if fit {
                     cadcraft_render::raster::View::fit(&list.bounds, w, h, 0.05)

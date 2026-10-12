@@ -43,7 +43,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("preview", "Plot Preview", run_preview)
             .menu(&["File", "Plot Preview"])
             .alias(&["pre"])
-            .params("{layout?: current|\"Model\", paper?, landscape?, fit?, scale?, lineweights?, width?: pixels (default 1200)} → {data: base64 PNG, width, height, layout, paper}")
+            .params("{layout?: current|\"Model\", paper?, landscape?, fit?, scale?, lineweights?, plotTransparency?, width?: pixels (default 1200)} → {data: base64 PNG, width, height, layout, paper}")
             .noundo(),
         CommandSpec::new("publish", "Batch Publish...", run_publish)
             .menu(&["File", "Batch Publish..."])
@@ -316,6 +316,7 @@ fn run_preview(s: &mut Session, p: &Value) -> Result<Value> {
         Space::Paper(_) => page.lineweights,
         Space::Model => true,
     });
+    let transparency = super::plotters::plot_transparency(s, p).unwrap_or(page.plot_transparency);
     let fit = p.get("fit").and_then(Value::as_bool).unwrap_or(matches!(space, Space::Model));
     let scale = p.get("scale").and_then(Value::as_f64).filter(|v| v.is_finite() && *v > 0.0);
     let width = p.get("width").and_then(Value::as_u64).unwrap_or(PREVIEW_PX).clamp(16, MAX_PREVIEW_PX);
@@ -331,6 +332,7 @@ fn run_preview(s: &mut Session, p: &Value) -> Result<Value> {
         text: true,
         fill: true,
         lineweights,
+        transparency,
         ..Default::default()
     };
     let list = cadcraft_render::build_plot(d, &space, &ropts);

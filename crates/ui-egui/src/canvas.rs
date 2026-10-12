@@ -38,7 +38,7 @@ impl Xf {
 #[derive(Default)]
 pub struct CanvasState {
     pub list: Option<DisplayList>,
-    key: (u64, u64, i32, i32, bool, usize),
+    key: (u64, u64, i32, i32, bool, bool, usize),
     /// The area `list` was built for (hatch patterns exist only inside it); a view leaving it
     /// rebuilds the list.
     window: Option<Bounds2>,
@@ -159,6 +159,12 @@ fn color32(c: Rgb) -> Color32 {
     Color32::from_rgb(c.0, c.1, c.2)
 }
 
+/// A primitive's colour on `bg`, with its transparency.
+fn prim_color32(prim: &cadcraft_render::DPrim, bg: Rgb) -> Color32 {
+    let c = prim.display_rgb(bg);
+    Color32::from_rgba_unmultiplied(c.0, c.1, c.2, prim.alpha())
+}
+
 /// Rebuild the display list when needed. `px`: drawing units per pixel in the current view;
 /// `views`: every area on screen that shows the list (the current view, other model tiles) with
 /// its drawing units per pixel.
@@ -169,7 +175,8 @@ fn ensure_list(app: &mut CadApp, px: f64, views: &[(Bounds2, f64)]) {
     let band = |px: f64| px.max(1e-300).log2().floor() as i32;
     // Hatch level of detail follows the finest view showing the list.
     let lod_band = views.iter().map(|v| band(v.1)).fold(band(px), i32::min);
-    let key = (st.uid, st.revision, band(px), lod_band, app.session.settings.lwdisplay, std::sync::Arc::as_ptr(&st.doc) as usize);
+    let settings = &app.session.settings;
+    let key = (st.uid, st.revision, band(px), lod_band, settings.lwdisplay, settings.transparency_display, std::sync::Arc::as_ptr(&st.doc) as usize);
     let visible = views.iter().fold(Bounds2::EMPTY, |acc, v| acc.union(&v.0));
     let inside = app.canvas.window.is_none_or(|w| visible.is_empty() || w.contains_box(&visible));
     if app.canvas.list.is_some() && app.canvas.key == key && inside {
@@ -187,6 +194,7 @@ fn ensure_list(app: &mut CadApp, px: f64, views: &[(Bounds2, f64)]) {
         view_height: st.paper_view().height,
         plot_style_table: None,
         view: build_window(views),
+        transparency: app.session.settings.transparency_display,
     };
     let space = st.space.clone();
     app.canvas.list = Some(cadcraft_render::build(&st.doc, &space, &opts));
@@ -313,7 +321,7 @@ fn draw_list(p: &egui::Painter, xf: &Xf, list: &DisplayList, bg: Rgb, lwdisplay:
     let mut shapes: Vec<Shape> = Vec::with_capacity(list.prims.len());
     let px = 1.0 / xf.scale;
     for prim in &list.prims {
-        let col = color32(prim.display_rgb(bg));
+        let col = prim_color32(prim, bg);
         let pts = list.points(prim);
         match prim.kind {
             Kind::Polyline => {
@@ -525,7 +533,7 @@ fn draw_list_gpu(c: &mut CanvasState, p: &egui::Painter, xf: &Xf, bg: Rgb, lwdis
         if let (Kind::Infinite { ray }, Some(b), Some(d)) = (prim.kind, pts.first(), pts.get(1))
             && let Some(seg) = clip_infinite(xf, *b, *d, ray)
         {
-            shapes.push(Shape::line_segment(seg, Stroke::new(1.0, color32(prim.display_rgb(bg)))));
+            shapes.push(Shape::line_segment(seg, Stroke::new(1.0, prim_color32(prim, bg))));
         }
     }
     p.extend(shapes);
@@ -1747,7 +1755,8 @@ mod tests {
     use cadcraft_render::DPrim;
 
     fn list(handles: &[u64]) -> DisplayList {
-        let prim = |h| DPrim { handle: Handle(h), color: Rgb(255, 255, 255), aci7: true, lw: 0.0, kind: Kind::Polyline, start: 0, len: 0 };
+        let prim =
+            |h| DPrim { handle: Handle(h), color: Rgb(255, 255, 255), aci7: true, lw: 0.0, transparency: 0, kind: Kind::Polyline, start: 0, len: 0 };
         DisplayList { prims: handles.iter().map(|&h| prim(h)).collect(), ..Default::default() }
     }
 
