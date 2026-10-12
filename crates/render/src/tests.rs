@@ -761,3 +761,31 @@ fn attributes_draw_with_their_own_transparency() {
     // Off: everything opaque.
     assert!(build(&d, &Space::Model, &Options::default()).prims.iter().all(|p| p.transparency == 0));
 }
+
+#[test]
+fn attributes_follow_the_reference_layer_and_have_no_definition() {
+    use cadcraft_doc::Transparency::Percent;
+    // A layer-0 ByLayer definition in a reference on a 40 % layer: the line and the attribute
+    // both take the reference's layer.
+    let mut d = attributed(Common::default(), Common { layer: "Glass".into(), ..Default::default() });
+    // Adding the reference made the layer.
+    d.layer_mut("Glass").unwrap().transparency = 40;
+    let (line, text) = line_and_text(&d);
+    assert_eq!(line, 40);
+    assert!(text.iter().all(|t| *t == 40), "{text:?}");
+    // No definition in the block: the attribute follows the reference (30 %), with or without
+    // properties of its own.
+    for props in [cadcraft_doc::AttribProps::default(), cadcraft_doc::AttribProps { color: Some(Color::Index(3)), ..Default::default() }] {
+        let mut d = Drawing::new_imperial();
+        let mut blk = cadcraft_doc::Block::new("B");
+        let (c, k) = line_common(Common::default());
+        blk.entities.push(block_entity(1, c, k));
+        d.blocks.insert("B".into(), std::sync::Arc::new(blk));
+        let EntityKind::Insert(mut ins) = insert_of("B") else { panic!("an insert") };
+        ins.attribs.push(cadcraft_doc::Attrib { props: props.clone(), ..attrib("TAG") });
+        d.add(&Space::Model, Common { transparency: Percent(30), ..Default::default() }, EntityKind::Insert(ins)).unwrap();
+        let (line, text) = line_and_text(&d);
+        assert_eq!(line, 0, "layer-0 ByLayer contents take the reference's opaque layer");
+        assert!(text.iter().all(|t| *t == 30), "{props:?}: {text:?}");
+    }
+}

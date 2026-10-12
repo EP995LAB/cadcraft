@@ -155,10 +155,18 @@ fn prims_of(list: &DisplayList, handles: &[Handle]) -> Vec<usize> {
     list.prims.iter().enumerate().filter(|(_, pr)| set.contains(&pr.handle)).map(|(i, _)| i).collect()
 }
 
-/// Build options for previews at `scale` pixels per drawing unit; `transparency` is
-/// TRANSPARENCYDISPLAY, so objects being dragged or drawn look as they will once placed.
-fn preview_options(scale: f64, transparency: bool) -> cadcraft_render::Options {
-    cadcraft_render::Options { tolerance: 0.5 / scale, min_dash: 2.0 / scale, transparency, ..Default::default() }
+/// Build options for previews at `scale` pixels per drawing unit (opaque).
+fn preview_options(scale: f64) -> cadcraft_render::Options {
+    cadcraft_render::Options { tolerance: 0.5 / scale, min_dash: 2.0 / scale, ..Default::default() }
+}
+
+/// The display list of preview entities the session builds with the current properties
+/// ([`cadcraft_engine::Session::preview`], the extras of [`cadcraft_engine::Session::drag`]): the
+/// command's rubber band and rebuilt copies of existing objects. They carry CLAYER's properties,
+/// not the objects', so they are drawn opaque (the GPU drag of the objects themselves keeps their
+/// transparency, see [`draw_drag_gpu`]).
+fn rebuilt_preview<'a>(doc: &cadcraft_doc::Drawing, ents: impl IntoIterator<Item = &'a cadcraft_doc::Entity>, scale: f64) -> DisplayList {
+    cadcraft_render::build_entities(doc, ents, &preview_options(scale))
 }
 
 fn color32(c: Rgb) -> Color32 {
@@ -466,7 +474,7 @@ fn draw_drag_gpu(
     };
     if c.drag_key != Some(key) {
         let band_scale = 2f64.powi(band);
-        let opts = preview_options(band_scale, transparency);
+        let opts = cadcraft_render::Options { transparency, ..preview_options(band_scale) };
         let list = if drag.clipboard {
             cadcraft_render::build_entities(doc, clipboard.0.iter(), &opts)
         } else {
@@ -1214,7 +1222,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
             let serial = app.session.clipboard_source.as_ref().map_or(0, |c| c.serial);
             let transparency = app.session.settings.transparency_display;
             draw_drag_gpu(&mut app.canvas, &painter, &xf, &st.doc, &drag, (&app.session.clipboard, serial), bg, transparency);
-            let list = cadcraft_render::build_entities(&st.doc, extra.iter(), &preview_options(scale, transparency));
+            let list = rebuilt_preview(&st.doc, extra.iter(), scale);
             draw_list(&painter, &xf, &list, bg, false);
         }
     } else if let (Some(c), true) = (app.canvas.cursor, app.session.running.is_some()) {
@@ -1222,7 +1230,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         if !ents.is_empty()
             && let Ok(st) = app.session.state()
         {
-            let list = cadcraft_render::build_entities(&st.doc, ents.iter(), &preview_options(scale, app.session.settings.transparency_display));
+            let list = rebuilt_preview(&st.doc, ents.iter(), scale);
             draw_list(&painter, &xf, &list, bg, false);
         }
     }
@@ -1778,8 +1786,9 @@ mod tests {
         let rect = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 100.0));
         let xf = Xf { rect, center: Vec2::new(5.0, 0.0), scale: 10.0 };
         let painter = egui::Painter::new(egui::Context::default(), egui::LayerId::background(), rect);
-        let alpha = |transparency: bool| {
-            let mut c = CanvasState::default();
+        // One canvas across the toggle: the cached drag mesh must be rebuilt.
+        let mut c = CanvasState::default();
+        let mut alpha = |transparency: bool| {
             draw_drag_gpu(&mut c, &painter, &xf, &d, &drag, (&[], 0), Rgb(0, 0, 0), transparency);
             let mesh = c.drag_slot.lock().unwrap().take().unwrap();
             // The first line vertex's colour alpha (after its 2 × f32 position).
@@ -1787,7 +1796,42 @@ mod tests {
         };
         assert_eq!(alpha(true), 128);
         assert_eq!(alpha(false), 255);
-        assert!(preview_options(2.0, true).transparency && !preview_options(2.0, false).transparency);
+        assert_eq!(alpha(true), 128);
+    }
+
+    /// Previews the session rebuilds with the current properties (the rubber band, copies of
+    /// objects) stay opaque even when CLAYER is transparent: they were opaque before transparency
+    /// was drawn, and CLAYER's transparency isn't the objects'.
+    #[test]
+    fn rebuilt_previews_stay_opaque_on_a_transparent_current_layer() {
+        let mut s = cadcraft_engine::Session::new();
+        let d = s.doc_mut().unwrap();
+        d.layers.push(cadcraft_doc::Layer { name: "Glass".into(), transparency: 40, ..Default::default() });
+        d.header.set_str("CLAYER", "Glass");
+        assert!(s.settings.transparency_display);
+        // LINE: the segment from the first point to the cursor.
+        s.cmdline("line").unwrap();
+        s.cmdline("0,0").unwrap();
+        let ents = s.preview(Vec2::new(10.0, 5.0));
+        assert!(!ents.is_empty());
+        assert_eq!(ents[0].common.layer, "Glass");
+        let doc = s.doc().unwrap();
+        // Built with transparency, the preview would take CLAYER's 40 %.
+        let with = cadcraft_render::build_entities(doc, ents.iter(), &cadcraft_render::Options { transparency: true, ..preview_options(1.0) });
+        assert!(with.prims.iter().all(|p| p.transparency == 40));
+        let list = rebuilt_preview(doc, ents.iter(), 1.0);
+        assert!(!list.prims.is_empty() && list.prims.iter().all(|p| p.transparency == 0));
+        s.cancel();
+        // MOVE's base-to-cursor rubber band (a drag extra).
+        s.execute("line", &serde_json::json!({"points": [[0, 0], [10, 0]]})).unwrap();
+        s.cmdline("move").unwrap();
+        s.cmdline("all").unwrap();
+        s.cmdline("").unwrap();
+        s.cmdline("0,0").unwrap();
+        let (_, extra) = s.drag(Vec2::new(4.0, 4.0)).unwrap();
+        assert!(!extra.is_empty());
+        let list = rebuilt_preview(s.doc().unwrap(), extra.iter(), 1.0);
+        assert!(!list.prims.is_empty() && list.prims.iter().all(|p| p.transparency == 0));
     }
 
     #[test]

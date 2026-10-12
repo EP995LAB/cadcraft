@@ -2134,3 +2134,43 @@ fn pdf_strokes_overlapping_transparent_objects_one_by_one() {
     // Transparency off: the transparent layer plots as before too.
     assert_eq!(content(&crossing(50), false), opaque);
 }
+
+#[test]
+fn pdf_strokes_each_transparent_primitive_inside_a_block() {
+    // One block reference whose two children cross: they share the reference's handle.
+    let crossing_block = |t: u8| {
+        let mut d = Drawing::new_metric();
+        let mut blk = Block::new("X");
+        for (i, (a, b)) in [((0.0, 0.0), (100.0, 100.0)), ((0.0, 100.0), (100.0, 0.0))].into_iter().enumerate() {
+            let line = Line { a: Vec3::new(a.0, a.1, 0.0), b: Vec3::new(b.0, b.1, 0.0) };
+            let mut e = Entity::new(Handle(i as u64 + 1), EntityKind::Line(line));
+            e.common = Common { color: Color::Index(1), transparency: Transparency::ByBlock, ..Common::default() };
+            blk.entities.push(e);
+        }
+        d.blocks.insert("X".into(), std::sync::Arc::new(blk));
+        let ins = Insert {
+            block: "X".into(),
+            insert: Vec3::ZERO,
+            scale: Vec3::new(1.0, 1.0, 1.0),
+            rotation: 0.0,
+            attribs: vec![],
+            cols: 1,
+            rows: 1,
+            col_spacing: 0.0,
+            row_spacing: 0.0,
+        };
+        d.add(&Space::Model, Common { transparency: Transparency::Percent(t), ..Common::default() }, EntityKind::Insert(ins)).unwrap();
+        d
+    };
+    let content = |d: &Drawing, on: bool| {
+        check_pdf(&plot(d, &Space::Model, &serde_json::json!({"paper": "A4", "compress": false, "plotTransparency": on})).unwrap())
+    };
+    let half = content(&crossing_block(50), true);
+    assert!(half.contains("/T50 gs"), "{half}");
+    assert_eq!(half.matches("S\n").count(), 2, "{half}");
+    // Opaque: one path, the same with the option on or off.
+    let opaque = content(&crossing_block(0), true);
+    assert_eq!(opaque.matches("S\n").count(), 1, "{opaque}");
+    assert_eq!(opaque, content(&crossing_block(0), false));
+    assert_eq!(content(&crossing_block(50), false), opaque);
+}
