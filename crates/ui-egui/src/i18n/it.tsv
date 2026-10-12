@@ -93,7 +93,7 @@
 	Binary assets added	File binari aggiunti
 	Binary assets removed	File binari rimossi
 	Bind...	Integra...
-	Blend	Curva di raccordo
+	Blend	Raccordo diffuso
 	Block	Blocco
 	Block Attribute Manager...	Gestione attributi blocco...
 	Block Editor	Editor blocchi
@@ -107,7 +107,7 @@
 	Boundary...	Contorno...
 	Box	Parallelepipedo
 	Break	Spezza
-	Break At Point	Spezza nel punto
+	Break At Point	Spezza in un punto
 	Bring Above Objects	Porta sopra gli oggetti
 	Bring Annotations to Front	Porta le annotazioni in primo piano
 	Bring to Front	Porta in primo piano
@@ -137,7 +137,7 @@
 	Circumference	Circonferenza
 	Clear History	Cancella cronologia
 	Clear	Elimina
-	Clip	Ritaglia
+	Clip	Ritaglio
 	Clip Viewport	Ritaglia finestra
 	Clipboard	Appunti
 	Close	Chiudi
@@ -513,7 +513,7 @@
 	Make Object's Layer Current	Rendi corrente il layer dell'oggetto
 	Make...	Crea...
 	Match Layer	Uniforma layer
-	Match Properties	Uniforma proprietà
+	Match Properties	Corrispondenza con proprietà
 	Measure	Misura
 	Measure Distance	Misura distanza
 	Measure Geometry	Misura geometria
@@ -1185,7 +1185,7 @@
 	Export...	Esporta...
 	Batch Publish...	Pubblicazione multipla...
 	Scale List...	Elenco scale...
-	Annotative Object Scale	Scala oggetti annotativi
+	Annotative Object Scale	Scala oggetto annotativo
 	Add Current Scale	Aggiungi scala corrente
 	Delete Current Scale	Elimina scala corrente
 	Add/Delete Scales...	Aggiungi/elimina scale...
