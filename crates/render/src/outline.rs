@@ -27,8 +27,7 @@ pub fn fill_outlines(tris: &[Vec2]) -> Vec<Vec<Vec2>> {
     }
     let mut edges: HashMap<(Key, Key), u32> = HashMap::new();
     let mut flat: HashMap<u64, Vec<(f64, f64)>> = HashMap::new();
-    for t in tris.chunks_exact(3) {
-        let [p, q, r] = t else { continue };
+    for [p, q, r] in tris.as_chunks::<3>().0 {
         for (a, b) in [(*p, *q), (*q, *r), (*r, *p)] {
             let (a, b) = (norm(a), norm(b));
             if !(a.is_finite() && b.is_finite()) || key(a) == key(b) {
