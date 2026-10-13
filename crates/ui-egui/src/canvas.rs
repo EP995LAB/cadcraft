@@ -657,7 +657,7 @@ fn clip_infinite(xf: &Xf, base: Vec2, dir: Vec2, ray: bool) -> Option<[Pos2; 2]>
 }
 
 /// Draw a display list.
-fn draw_list(p: &egui::Painter, xf: &Xf, list: &DisplayList, bg: Rgb, lwdisplay: bool) {
+pub(crate) fn draw_list(p: &egui::Painter, xf: &Xf, list: &DisplayList, bg: Rgb, lwdisplay: bool) {
     let vis = xf.world_bounds();
     let mut shapes: Vec<Shape> = Vec::with_capacity(list.prims.len());
     let px = 1.0 / xf.scale;
@@ -1526,6 +1526,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
             Rgb(t.paper.r(), t.paper.g(), t.paper.b())
         }
         None => {
+            blockedit::wash(app, &painter, rect);
             draw_grid(app, &painter, &xf);
             Rgb(t.canvas.r(), t.canvas.g(), t.canvas.b())
         }
@@ -1629,6 +1630,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     }
     app.canvas.draw_ms = crate::now_ms() - t0;
     compare::paint(app, ui.ctx(), &painter, &xf_paper, rect);
+    blockedit::paint(app, ui.ctx(), &painter, &xf_paper, rect);
     // Constraint bars and dynamic dimensional constraints (model space, or inside a viewport).
     if sheet.is_none() || active_vp.is_some() {
         let clip = match &active_vp {
@@ -2505,6 +2507,8 @@ pub(crate) mod tests {
     }
 }
 
+/// The Block Editor's tint, base point and bar.
+mod blockedit;
 /// The COMPARE overlay.
 mod compare;
 

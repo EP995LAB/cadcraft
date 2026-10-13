@@ -10,6 +10,7 @@
 
 pub mod animation;
 pub mod autosave;
+pub mod bedit;
 pub mod canvas;
 pub mod chrome;
 pub mod clipboard;
@@ -21,6 +22,7 @@ pub mod credits;
 pub mod dialogs;
 pub mod docking;
 pub mod hatchdlg;
+mod mtext_editor;
 pub mod spacemouse;
 // The External References palette.
 pub mod xrefs;
@@ -239,6 +241,8 @@ pub struct CadApp {
     pub gpu_notice: Option<autosave::GpuNotice>,
     /// The Hatch and Gradient dialog while open or picking ([`hatchdlg`]).
     pub hatch_dlg: Option<hatchdlg::HatchDlgState>,
+    /// The Edit Block Definition dialog ([`bedit`]).
+    pub bedit: bedit::State,
 }
 
 impl CadApp {
@@ -276,6 +280,7 @@ impl CadApp {
             gpu_faults: std::sync::Arc::default(),
             gpu_notice: None,
             hatch_dlg: None,
+            bedit: bedit::State::default(),
         }
     }
 
@@ -502,6 +507,10 @@ impl CadApp {
                 // the command line.
                 if let Some(w) = v.get("warnings").and_then(Value::as_array).and_then(|w| w.first()).and_then(Value::as_str) {
                     self.set_status(w.to_string());
+                }
+                // A dynamic block's own drawing: ask whether to open it in the Block Editor.
+                if self.session.state().is_ok_and(|st| cadcraft_engine::blockedit::has_authoring_elements(&st.doc)) {
+                    self.ui.dialog = Some("authoring".into());
                 }
             }
         }

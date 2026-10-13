@@ -780,6 +780,7 @@ fn attrib(tag: &str) -> cadcraft_doc::Attrib {
         prompt: String::new(),
         props: Default::default(),
         multiline: None,
+        modes: Default::default(),
     }
 }
 
