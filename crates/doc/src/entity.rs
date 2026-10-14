@@ -973,6 +973,20 @@ pub struct Unknown {
     pub tags: Vec<RawTag>,
 }
 
+impl Unknown {
+    /// Whether the entity is a dimension of a kind CADCraft doesn't model (it carries the
+    /// `AcDbDimension` subclass marker: ARC_DIMENSION, LARGE_RADIAL_DIMENSION).
+    pub fn is_dimension(&self) -> bool {
+        self.tags.iter().any(|t| t.code == 100 && t.value.trim() == "AcDbDimension")
+    }
+
+    /// The block names the entity carries (its group 2 values): a dimension's anonymous `*D`
+    /// block. Kept as read, the entity goes on naming them after a save (#1161).
+    pub fn block_names(&self) -> impl Iterator<Item = &str> {
+        self.tags.iter().filter(|t| t.code == 2).map(|t| t.value.trim())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum EntityKind {
