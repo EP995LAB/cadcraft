@@ -162,3 +162,30 @@ fn a_dim_block_nothing_names_is_still_dropped() {
     assert_eq!(arc_dim_blocks(out.as_str()), vec!["*D2".to_string()]);
     assert!(!block_names(&out).iter().any(|n| n == "*D1"), "unreferenced *D1 kept: {:?}", block_names(&out));
 }
+
+#[test]
+fn a_dimension_without_or_with_another_case_of_its_marker_keeps_its_block() {
+    let base = dxf(ARC_DIM);
+    let marker = "100\nAcDbDimension\n";
+    assert!(base.contains(marker), "fixture edit failed");
+    // No `100 AcDbDimension` line at all, and the marker written in lower case: the entity is
+    // still a dimension by its type, so its block stays.
+    for src in [base.replace(marker, ""), base.replace("AcDbDimension", "acdbdimension")] {
+        assert_ne!(src, base);
+        check(&resave(&src));
+    }
+}
+
+#[test]
+fn a_raw_shape_without_a_marker_is_not_a_dimension() {
+    use cadcraft_doc::{RawTag, Unknown};
+    let tag = |code, value: &str| RawTag { code, value: value.into() };
+    let shape = Unknown { dxf_type: "SHAPE".into(), tags: vec![tag(100, "AcDbShape"), tag(2, "BOX")] };
+    assert!(!shape.is_dimension());
+    assert_eq!(shape.block_names().count(), 0);
+    // A lower-case marker on an unmodelled type still counts.
+    let odd = Unknown { dxf_type: "SOMETHING".into(), tags: vec![tag(100, " acdbdimension "), tag(2, "*D9")] };
+    assert!(odd.is_dimension());
+    let bare = Unknown { dxf_type: " arc_dimension ".into(), tags: vec![tag(2, "*D9")] };
+    assert_eq!(bare.block_names().collect::<Vec<_>>(), ["*D9"]);
+}
