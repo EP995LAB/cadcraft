@@ -3,8 +3,8 @@
 use std::f64::consts::{FRAC_PI_2, PI};
 
 use cadcraft_engine::Session;
-use cadcraft_engine::doc::{EntityKind, Handle};
-use cadcraft_engine::geom::Vec2;
+use cadcraft_engine::doc::{Arc as DocArc, EntityKind, Handle, Line as DocLine};
+use cadcraft_engine::geom::{Vec2, Vec3};
 use serde_json::{Value, json};
 
 fn h(r: &Value) -> String {
@@ -243,4 +243,233 @@ fn join_at_the_command_line_names_the_line_or_arc() {
     assert!(s.running.is_none(), "{}", s.prompt_text());
     assert!(s.log.iter().any(|l| l.contains("2 objects joined into 1 arc")), "{:?}", s.log);
     assert_eq!(count(&s), 1);
+}
+
+// ---------------- review follow-ups ----------------
+
+#[test]
+fn arcs_touching_the_start_of_the_source_do_not_close_a_circle() {
+    // An arc ending exactly where the source starts moves the start back, it does not wrap the circle.
+    let mut s = Session::new();
+    let a = arc(&mut s, 90.0, 180.0);
+    let b = arc(&mut s, 0.0, 90.0);
+    let r = s.execute("join", &json!({ "handles": [a, b] })).unwrap();
+    assert_eq!(h(&r), a);
+    assert_eq!(count(&s), 1);
+    assert_arc(&s, &a, 0.0, PI);
+    let mut s = Session::new();
+    let a = arc(&mut s, 0.0, 90.0);
+    let b = arc(&mut s, 270.0, 360.0);
+    s.execute("join", &json!({ "handles": [a, b] })).unwrap();
+    assert_eq!(count(&s), 1);
+    assert_arc(&s, &a, 3.0 * FRAC_PI_2, 2.5 * PI);
+    let mut s = Session::new();
+    let a = arc(&mut s, 0.0, 90.0);
+    let b = arc(&mut s, 180.0, 270.0);
+    let c = arc(&mut s, 270.0, 360.0);
+    s.execute("join", &json!({ "handles": [a, b, c] })).unwrap();
+    assert_eq!(count(&s), 1);
+    assert_arc(&s, &a, PI, 2.5 * PI);
+    // Four quadrants that really cover the circle still make one.
+    let mut s = Session::new();
+    let a = arc(&mut s, 0.0, 90.0);
+    let rest = [arc(&mut s, 90.0, 180.0), arc(&mut s, 180.0, 270.0), arc(&mut s, 270.0, 360.0)];
+    s.execute("join", &json!({ "handles": [a.clone(), rest[0].clone(), rest[1].clone(), rest[2].clone()] })).unwrap();
+    assert_eq!(count(&s), 1);
+    assert_eq!(circle_of(&s, &a), (Vec2::new(50.0, 50.0), 30.0));
+}
+
+#[test]
+fn lines_not_collinear_in_3d_do_not_join() {
+    let mut s = Session::new();
+    let a = s.add_entity(EntityKind::Line(DocLine { a: Vec3::new(0.0, 0.0, 0.0), b: Vec3::new(10.0, 0.0, 10.0) })).unwrap().hex();
+    let b = s.add_entity(EntityKind::Line(DocLine { a: Vec3::new(20.0, 0.0, 0.0), b: Vec3::new(30.0, 0.0, 0.0) })).unwrap().hex();
+    assert!(s.execute("join", &json!({ "handles": [a, b] })).is_err());
+    assert_eq!(count(&s), 2);
+    match kind(&s, &a) {
+        EntityKind::Line(l) => assert_eq!(l.b, Vec3::new(10.0, 0.0, 10.0)),
+        k => panic!("not a line: {k:?}"),
+    }
+}
+
+#[test]
+fn joined_lines_keep_their_elevation() {
+    let mut s = Session::new();
+    let a = s.add_entity(EntityKind::Line(DocLine { a: Vec3::new(0.0, 0.0, 5.0), b: Vec3::new(10.0, 0.0, 5.0) })).unwrap().hex();
+    let b = s.add_entity(EntityKind::Line(DocLine { a: Vec3::new(20.0, 0.0, 5.0), b: Vec3::new(30.0, 0.0, 5.0) })).unwrap().hex();
+    s.execute("join", &json!({ "handles": [a, b] })).unwrap();
+    assert_eq!(count(&s), 1);
+    match kind(&s, &a) {
+        EntityKind::Line(l) => assert_eq!((l.a, l.b), (Vec3::new(0.0, 0.0, 5.0), Vec3::new(30.0, 0.0, 5.0))),
+        k => panic!("not a line: {k:?}"),
+    }
+}
+
+#[test]
+fn arcs_with_non_finite_angles_are_not_absorbed() {
+    // Such an arc is no part of the source's circle: it never becomes a circle or an arc of the
+    // source, it is left to the polyline chain as before (or refused).
+    for (start, end) in [(f64::NAN, f64::NAN), (f64::INFINITY, 1.0), (0.5, f64::NEG_INFINITY)] {
+        let mut s = Session::new();
+        let a = arc(&mut s, 0.0, 90.0);
+        let b = s.add_entity(EntityKind::Arc(DocArc { center: Vec3::new(50.0, 50.0, 0.0), radius: 30.0, start, end })).unwrap().hex();
+        match s.execute("join", &json!({ "handles": [a, b] })) {
+            Ok(r) => assert!(matches!(kind(&s, &h(&r)), EntityKind::LwPolyline(_)), "angles {start}, {end}: {:?}", kind(&s, &h(&r))),
+            Err(_) => assert_eq!(count(&s), 2),
+        }
+    }
+}
+
+// ---------------- review follow-up 2: whole degrees, elevation, extrusion ----------------
+
+fn deg(a: f64) -> f64 {
+    a.rem_euclid(360.0)
+}
+
+#[test]
+fn arcs_touching_or_overlapping_in_whole_degrees_stay_one_arc() {
+    // Touching: 114-124 with 104-114; 29-149 with -1-29. Overlapping: 114-144 with 104-134; 29-59 with -11-39.
+    // They leave a gap, so the result is one arc holding both, never the circle.
+    for (src, other, from, to) in [
+        ((114.0, 124.0), (104.0, 114.0), 104.0, 124.0),
+        ((29.0, 149.0), (-1.0, 29.0), -1.0, 149.0),
+        ((114.0, 144.0), (104.0, 134.0), 104.0, 144.0),
+        ((29.0, 59.0), (-11.0, 39.0), -11.0, 59.0),
+    ] {
+        let mut s = Session::new();
+        let a = arc(&mut s, deg(src.0), deg(src.1));
+        let b = arc(&mut s, deg(other.0), deg(other.1));
+        let r = s.execute("join", &json!({ "handles": [a, b] })).unwrap();
+        assert_eq!(h(&r), a);
+        assert_eq!(count(&s), 1);
+        assert_arc(&s, &a, f64::to_radians(from), f64::to_radians(to));
+    }
+}
+
+/// Whether the integer-degree arcs (start, sweep) together cover the whole circle.
+fn covers_circle(arcs: &[(i32, i32)]) -> bool {
+    let mut cov = [false; 360];
+    for (st, sw) in arcs {
+        for k in 0..*sw {
+            cov[(st + k).rem_euclid(360) as usize] = true;
+        }
+    }
+    cov.iter().all(|c| *c)
+}
+
+/// Joins arcs (start, sweep in whole degrees; the first is the source) and checks the outcome.
+fn check_join_in_degrees(arcs: &[(i32, i32)]) -> Result<(), String> {
+    let mut s = Session::new();
+    let hs: Vec<String> = arcs.iter().map(|(st, sw)| arc(&mut s, deg(*st as f64), deg((*st + *sw) as f64))).collect();
+    let r = s.execute("join", &json!({ "handles": hs })).map_err(|e| format!("{arcs:?}: refused {e}"))?;
+    if h(&r) != hs[0] {
+        return Err(format!("{arcs:?}: source handle lost"));
+    }
+    if count(&s) != 1 {
+        return Err(format!("{arcs:?}: {} entities left", count(&s)));
+    }
+    let covered = covers_circle(arcs);
+    match kind(&s, &hs[0]) {
+        EntityKind::Circle(_) if covered => Ok(()),
+        EntityKind::Circle(_) => Err(format!("{arcs:?}: CIRCLE but the inputs leave a gap")),
+        EntityKind::Arc(_) if covered => Err(format!("{arcs:?}: ARC but the inputs cover the circle")),
+        EntityKind::Arc(res) => {
+            let ext = (res.end - res.start).rem_euclid(std::f64::consts::TAU);
+            for (st, sw) in arcs {
+                let off = (deg(*st as f64).to_radians() - res.start).rem_euclid(std::f64::consts::TAU);
+                // An offset a hair under a full turn is a hair behind the start.
+                let off = if off > std::f64::consts::TAU - 1e-9 { 0.0 } else { off };
+                if off + (*sw as f64).to_radians() > ext + 1e-9 {
+                    return Err(format!("{arcs:?}: piece {st}+{sw} not inside the result {} to {}", res.start, res.end));
+                }
+            }
+            Ok(())
+        }
+        k => Err(format!("{arcs:?}: {k:?}")),
+    }
+}
+
+#[test]
+fn join_of_whole_degree_arcs_holds_every_piece_and_closes_a_circle_only_when_covered() {
+    let mut bad = Vec::new();
+    let mut n = 0;
+    for start in (0..360).step_by(5) {
+        for sw in [10, 30, 90, 180, 270] {
+            for off in [-30, -20, -10, 0, 10, sw - 10, sw, sw + 10, sw + 30] {
+                for osw in [10, 20, 90, 200] {
+                    // The other arc starts `off` after the source's start: touching either end
+                    // (off = sw, off = -osw) or overlapping it, or clear of it.
+                    for o in [off, -osw] {
+                        n += 1;
+                        if let Err(e) = check_join_in_degrees(&[(start, sw), (start + o, osw)]) {
+                            bad.push(e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Three arcs: the source, one touching its end and one touching its start.
+    for start in (0..360).step_by(15) {
+        for (sw, a, b) in [(30, 20, 40), (90, 100, 120), (60, 150, 140)] {
+            n += 1;
+            if let Err(e) = check_join_in_degrees(&[(start, sw), (start + sw, a), (start - b, b)]) {
+                bad.push(e);
+            }
+        }
+    }
+    assert!(n > 5000);
+    assert!(bad.is_empty(), "{} of {n} wrong, first: {:?}", bad.len(), &bad[..bad.len().min(5)]);
+}
+
+fn arc_at(s: &mut Session, z: f64, start: f64, end: f64) -> String {
+    s.add_entity(EntityKind::Arc(DocArc { center: Vec3::new(50.0, 50.0, z), radius: 30.0, start: start.to_radians(), end: end.to_radians() }))
+        .unwrap()
+        .hex()
+}
+
+#[test]
+fn arcs_at_another_elevation_are_not_absorbed_across_a_gap() {
+    for z in [10.0, f64::NAN, f64::INFINITY] {
+        let mut s = Session::new();
+        let a = arc_at(&mut s, 0.0, 0.0, 90.0);
+        let b = arc_at(&mut s, z, 180.0, 270.0);
+        assert!(s.execute("join", &json!({ "handles": [a, b] })).is_err(), "z = {z}");
+        assert_eq!(count(&s), 2);
+        assert!(exists(&s, &a) && exists(&s, &b));
+        assert_eq!(arc_of(&s, &a).2, 0.0);
+    }
+}
+
+#[test]
+fn arcs_with_another_extrusion_are_not_absorbed_across_a_gap() {
+    // A flipped extrusion.
+    let mut s = Session::new();
+    let a = arc_at(&mut s, 0.0, 0.0, 90.0);
+    let b = arc_at(&mut s, 0.0, 180.0, 270.0);
+    let hb = Handle::parse_hex(&b).unwrap();
+    s.doc_mut().unwrap().modify_entity(hb, |e| e.common.extrusion = Vec3::new(0.0, 0.0, -1.0)).unwrap();
+    assert!(s.execute("join", &json!({ "handles": [a, b] })).is_err());
+    assert_eq!(count(&s), 2);
+    // A non-finite extrusion too.
+    let mut s = Session::new();
+    let a = arc_at(&mut s, 0.0, 0.0, 90.0);
+    let b = arc_at(&mut s, 0.0, 180.0, 270.0);
+    let hb = Handle::parse_hex(&b).unwrap();
+    s.doc_mut().unwrap().modify_entity(hb, |e| e.common.extrusion = Vec3::new(f64::NAN, 0.0, 1.0)).unwrap();
+    assert!(s.execute("join", &json!({ "handles": [a, b] })).is_err());
+    assert_eq!(count(&s), 2);
+}
+
+#[test]
+fn joined_arcs_keep_their_elevation() {
+    let mut s = Session::new();
+    let a = arc_at(&mut s, 5.0, 0.0, 90.0);
+    let b = arc_at(&mut s, 5.0, 180.0, 270.0);
+    s.execute("join", &json!({ "handles": [a, b] })).unwrap();
+    assert_eq!(count(&s), 1);
+    match kind(&s, &a) {
+        EntityKind::Arc(r) => assert_eq!(r.center, Vec3::new(50.0, 50.0, 5.0)),
+        k => panic!("not an arc: {k:?}"),
+    }
 }
