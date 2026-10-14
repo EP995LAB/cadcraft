@@ -1177,7 +1177,16 @@ impl EntityKind {
 
     /// Apply a 2D affine transform (move/rotate/uniform scale/mirror). Non-uniform scale turns
     /// circles into ellipses only where the kind supports it; otherwise radii use the mean scale.
+    /// A mirroring transform keeps TEXT, ATTDEF and MTEXT readable (MIRRTEXT 0) in the box their
+    /// mirror image would occupy, estimated like the extents; the engine measures that box with
+    /// the text's font through [`EntityKind::transform_measured`].
     pub fn transform(&mut self, m: &Mat3) {
+        self.transform_measured(m, &crate::extents::text_kind_box);
+    }
+
+    /// [`EntityKind::transform`] with `text_box` measuring the box a TEXT, ATTDEF or MTEXT draws
+    /// in, in world coordinates; it is asked with the text unrotated and placed at the origin.
+    pub fn transform_measured(&mut self, m: &Mat3, text_box: &dyn Fn(&EntityKind) -> Bounds2) {
         let t3 = |p: &mut Vec3| {
             let q = m.apply(p.xy());
             p.x = q.x;
@@ -1256,19 +1265,41 @@ impl EntityKind {
                 t3(&mut r.base);
                 r.dir = m.apply_vec(r.dir.xy()).normalized().to3(0.0);
             }
-            EntityKind::Text(t) => transform_text(t, m, s, rot, mirror),
+            EntityKind::Text(t) => {
+                if mirror {
+                    let local = local_text_box(t, &|c| text_box(&EntityKind::Text(c)));
+                    mirror_text(t, m, s, local);
+                } else {
+                    transform_text(t, m, s, rot);
+                }
+            }
             EntityKind::AttDef(a) => {
-                transform_text(&mut a.text, m, s, rot, mirror);
+                if mirror {
+                    let local = local_text_box(&a.text, &|c| text_box(&EntityKind::AttDef(Attrib { text: c, ..a.clone() })));
+                    mirror_text(&mut a.text, m, s, local);
+                } else {
+                    transform_text(&mut a.text, m, s, rot);
+                }
                 a.transform_multiline(m);
             }
             EntityKind::MText(t) => {
-                t3(&mut t.insert);
+                if mirror {
+                    // The box relative to the attachment point, before rotation.
+                    let local = text_box(&EntityKind::MText(MText { insert: Vec3::ZERO, rotation: 0.0, ..t.clone() }));
+                    let rotation = if t.rotation.is_finite() { t.rotation } else { 0.0 };
+                    let (q, rotation) = mirrored_readable(m, t.insert.xy(), rotation, local);
+                    t.insert.x = q.x;
+                    t.insert.y = q.y;
+                    t.rotation = cadcraft_geom::norm_angle(rotation);
+                } else {
+                    t3(&mut t.insert);
+                    t.rotation = cadcraft_geom::norm_angle(t.rotation + rot);
+                }
                 t.height *= s;
                 t.width *= s;
                 if let Some(c) = &mut t.columns {
                     c.scale(s);
                 }
-                t.rotation = cadcraft_geom::norm_angle(t.rotation + rot);
             }
             EntityKind::Insert(i) => {
                 t3(&mut i.insert);
@@ -1281,7 +1312,7 @@ impl EntityKind {
                     i.rotation = cadcraft_geom::norm_angle(rot - (i.rotation - rot));
                 }
                 for a in &mut i.attribs {
-                    transform_text(&mut a.text, m, s, rot, false);
+                    transform_text(&mut a.text, m, s, rot);
                     a.transform_multiline(m);
                 }
                 i.col_spacing *= s;
@@ -1455,7 +1486,8 @@ impl EntityKind {
     }
 }
 
-fn transform_text(t: &mut Text, m: &Mat3, s: f64, rot: f64, mirror: bool) {
+/// A text under a transform that does not mirror: its points move with it, it turns with it.
+fn transform_text(t: &mut Text, m: &Mat3, s: f64, rot: f64) {
     let q = m.apply(t.insert.xy());
     t.insert.x = q.x;
     t.insert.y = q.y;
@@ -1465,6 +1497,70 @@ fn transform_text(t: &mut Text, m: &Mat3, s: f64, rot: f64, mirror: bool) {
         a.y = q.y;
     }
     t.height *= s;
-    // MIRRTEXT = 0 (the default): mirrored text keeps reading left to right.
-    t.rotation = cadcraft_geom::norm_angle(t.rotation + if mirror { 0.0 } else { rot });
+    t.rotation = cadcraft_geom::norm_angle(t.rotation + rot);
+}
+
+/// Whether text running along `d` reads forward: from the left or from below, never upside
+/// down (the range dimension text is kept in).
+fn reads_forward(d: Vec2) -> bool {
+    let a = d.angle();
+    !(a > std::f64::consts::FRAC_PI_2 + 1e-9 && a <= 3.0 * std::f64::consts::FRAC_PI_2 + 1e-9)
+}
+
+/// Where a text goes under the mirroring transform `m` with MIRRTEXT 0: readable, in the box its
+/// mirror image would occupy. `at` is the point the text is placed by, `rotation` its direction
+/// and `local` its box relative to `at` before rotation (x along the text, y up). Returns the new
+/// placing point and direction. Of the two readings of the mirrored box, the text turns round
+/// (its left and right ends swap) or flips (its baseline moves to the far edge), whichever reads
+/// forward.
+fn mirrored_readable(m: &Mat3, at: Vec2, rotation: f64, local: Bounds2) -> (Vec2, f64) {
+    let d = Vec2::new(rotation.cos(), rotation.sin());
+    let along = m.apply_vec(d).normalized();
+    let along = if along == Vec2::ZERO { d } else { along };
+    let (x0, x1, y0, y1) = if local.is_empty() { (0.0, 0.0, 0.0, 0.0) } else { (local.min.x, local.max.x, local.min.y, local.max.y) };
+    // `ZERO - along`, not `-along`: a negated zero component would give a −0 angle.
+    let back = Vec2::ZERO - along;
+    let (opposite, dir) = if reads_forward(back) { (Vec2::new(x0 + x1, 0.0), back) } else { (Vec2::new(0.0, y0 + y1), along) };
+    (m.apply(at + opposite.rotate(rotation)), dir.angle())
+}
+
+/// The box `t` draws in, relative to the point it is placed by and before rotation: `measure` is
+/// asked with the text placed at the origin and unrotated (aligned and fit text spanning the
+/// same length along x).
+fn local_text_box(t: &Text, measure: &dyn Fn(Text) -> Bounds2) -> Bounds2 {
+    let at = t.justify_point();
+    let mut c = t.clone();
+    c.align_pt = match t.align_pt {
+        Some(a) if matches!(t.halign, HAlign::Aligned | HAlign::Fit) => Some(Vec3::new(at.dist(a.xy()), 0.0, 0.0)),
+        Some(_) => Some(Vec3::ZERO),
+        None => None,
+    };
+    c.insert = Vec3::ZERO;
+    c.rotation = 0.0;
+    measure(c)
+}
+
+/// A TEXT, ATTRIB or ATTDEF under a mirroring transform with MIRRTEXT 0: readable, in the box its
+/// mirror image would occupy (`local`, see [`local_text_box`]); its justification stays, its
+/// points keep their place in the text's own frame.
+fn mirror_text(t: &mut Text, m: &Mat3, s: f64, local: Bounds2) {
+    let at = t.justify_point();
+    let rotation = match t.align_pt {
+        Some(a) if matches!(t.halign, HAlign::Aligned | HAlign::Fit) => at.angle_to(a.xy()),
+        _ => t.rotation,
+    };
+    // A rotation that isn't a number (a hostile file) draws as 0, so it mirrors as 0.
+    let rotation = if rotation.is_finite() { rotation } else { 0.0 };
+    let (q, dir) = mirrored_readable(m, at, rotation, local);
+    let carry = |p: &mut Vec3| {
+        let w = q + ((p.xy() - at).rotate(-rotation) * s).rotate(dir);
+        p.x = w.x;
+        p.y = w.y;
+    };
+    carry(&mut t.insert);
+    if let Some(a) = &mut t.align_pt {
+        carry(a);
+    }
+    t.height *= s;
+    t.rotation = cadcraft_geom::norm_angle(dir);
 }
