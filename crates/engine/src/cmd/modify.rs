@@ -1548,6 +1548,9 @@ pub(crate) fn join(s: &mut Session, hs: &[Handle]) -> Result<Option<Handle>> {
     if hs.iter().any(|h| super::curves::is_locked(s, *h)) {
         return Err(EngineError::Other("An object is on a locked layer.".into()));
     }
+    if let Some(h) = join_on_one_line_or_circle(s, hs)? {
+        return Ok(Some(h));
+    }
     let d = s.doc()?;
     let mut segs: Vec<Segment> = Vec::new();
     // Source entity of each segment in `segs`, so only entities that end up in the chain are removed.
@@ -1620,6 +1623,121 @@ pub(crate) fn join(s: &mut Session, hs: &[Handle]) -> Result<Option<Handle>> {
     }
     s.set_selection(Vec::new());
     Ok(Some(nh))
+}
+
+/// JOIN for lines all on the source's line, or arcs all on the source's circle: the lines become
+/// one line over their whole extent and the arcs one arc counter-clockwise from the source's
+/// start, with the gaps between them closed (#1174). The source (the first object) keeps its
+/// handle. `None` when the selection is anything else: the polyline chain takes it.
+fn join_on_one_line_or_circle(s: &mut Session, hs: &[Handle]) -> Result<Option<Handle>> {
+    // A handle named twice is one object.
+    let mut seen = std::collections::HashSet::new();
+    let d = s.doc()?;
+    let ents: Vec<(Handle, EntityKind)> = hs.iter().filter(|h| seen.insert(**h)).filter_map(|h| d.entity(*h).map(|e| (*h, e.kind.clone()))).collect();
+    let Some((src_h, src)) = ents.first() else { return Ok(None) };
+    if ents.len() < 2 {
+        return Ok(None);
+    }
+    let kind = match src {
+        EntityKind::Line(_) => {
+            let lines: Option<Vec<Line>> =
+                ents.iter().map(|(_, k)| if let EntityKind::Line(l) = k { Some(Line::new(l.a.xy(), l.b.xy())) } else { None }).collect();
+            match lines.as_deref().and_then(merge_collinear) {
+                Some(l) => line(l.a, l.b),
+                None => return Ok(None),
+            }
+        }
+        EntityKind::Arc(a) => {
+            let arcs: Option<Vec<Arc>> = ents
+                .iter()
+                .map(|(_, k)| if let EntityKind::Arc(a) = k { Some(Arc::new(a.center.xy(), a.radius, a.start, a.end)) } else { None })
+                .collect();
+            match arcs.as_deref().and_then(merge_arcs_of_circle) {
+                Some(ArcJoin::Arc(m)) => EntityKind::Arc(cadcraft_doc::Arc { center: a.center, radius: m.radius, start: m.start, end: m.end }),
+                Some(ArcJoin::Circle(c)) => EntityKind::Circle(cadcraft_doc::Circle { center: a.center, radius: c.radius }),
+                None => return Ok(None),
+            }
+        }
+        _ => return Ok(None),
+    };
+    let src_h = *src_h;
+    let doc = s.doc_mut()?;
+    doc.modify_entity(src_h, |e| e.kind = kind)?;
+    for (h, _) in ents.iter().skip(1) {
+        doc.remove_entity(*h);
+    }
+    s.set_selection(Vec::new());
+    Ok(Some(src_h))
+}
+
+/// Lines all on the first one's line: one line from the first to the last of their ends along
+/// that line, whatever the gaps and overlaps between them. `None` when any end lies off the line
+/// or the first line has no length.
+fn merge_collinear(lines: &[Line]) -> Option<Line> {
+    let src = lines.first()?;
+    let len = src.len();
+    if !(len.is_finite() && len > 1e-12) {
+        return None;
+    }
+    let dir = (src.b - src.a) / len;
+    let tol = 1e-6;
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for p in lines.iter().flat_map(|l| [l.a, l.b]) {
+        let v = p - src.a;
+        let t = v.dot(dir);
+        if !(t.is_finite() && v.cross(dir).abs() <= tol) {
+            return None;
+        }
+        lo = lo.min(t);
+        hi = hi.max(t);
+    }
+    (hi > lo).then(|| Line::new(src.a + dir * lo, src.a + dir * hi))
+}
+
+/// What arcs of one circle join into.
+enum ArcJoin {
+    Arc(Arc),
+    Circle(Circle),
+}
+
+/// Arcs all on the first one's circle: one arc counter-clockwise from the first's start to the
+/// last end reached, with the gaps between them closed. An arc running back across that start
+/// moves the start to its own, so every piece lies on the result; arcs going all the way round
+/// make the circle. `None` when any arc lies on another circle (or is not a number).
+fn merge_arcs_of_circle(arcs: &[Arc]) -> Option<ArcJoin> {
+    let src = arcs.first()?;
+    let tol = 1e-6;
+    let on_src = |a: &Arc| {
+        a.center.is_finite() && a.radius.is_finite() && a.radius > 0.0 && a.center.near(src.center, tol) && (a.radius - src.radius).abs() <= tol
+    };
+    if !arcs.iter().all(on_src) {
+        return None;
+    }
+    let atol = 1e-9;
+    let mut anchor = src.start;
+    // One move per arc at most: moving on after that means the arcs run round the whole circle.
+    for _ in 0..=arcs.len() {
+        // Each arc from the anchor: (start in [0, 2π), end = start + sweep).
+        let spans: Vec<(f64, f64)> = arcs
+            .iter()
+            .map(|a| {
+                let s = norm_angle(a.start - anchor);
+                (s, s + a.sweep())
+            })
+            .collect();
+        // An arc running back across the anchor starts after it and ends past a full turn: the
+        // result starts where the furthest back of them does.
+        if let Some((s, _)) = spans.iter().filter(|(s, e)| *s > atol && *e > TAU + atol).min_by(|a, b| a.0.total_cmp(&b.0)) {
+            anchor = norm_angle(anchor + s);
+            continue;
+        }
+        let end = spans.iter().map(|(_, e)| *e).fold(0.0, f64::max);
+        if end >= TAU - atol {
+            return Some(ArcJoin::Circle(Circle::new(src.center, src.radius)));
+        }
+        return Some(ArcJoin::Arc(Arc::new(src.center, src.radius, anchor, anchor + end)));
+    }
+    Some(ArcJoin::Circle(Circle::new(src.center, src.radius)))
 }
 
 fn run_join(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1700,6 +1818,9 @@ impl SelectThen {
                         let what = match h.and_then(|h| d.entity(h)).map(|e| &e.kind) {
                             Some(EntityKind::Spline(_)) => "spline",
                             Some(EntityKind::Ellipse(_)) => "ellipse",
+                            Some(EntityKind::Line(_)) => "line",
+                            Some(EntityKind::Arc(_)) => "arc",
+                            Some(EntityKind::Circle(_)) => "circle",
                             _ => "polyline",
                         };
                         s.echo(format!("{n} objects joined into 1 {what}"))
