@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 pub const MAX_HELIX_TURNS: f64 = 500.0;
 /// Points on the helix per turn that its spline runs through.
 const POINTS_PER_TURN: f64 = 8.0;
+/// Fewest points a helix is fitted through, so a part of a turn is as close to the helix as the
+/// plain interpolation of its points was: the end tangents are chords over parameter steps, and
+/// the chord of a step of a whole eighth of a turn runs 2.5% short of the arc.
+const MIN_POINTS: usize = 32;
 
 /// What stays fixed when the helix is edited (DXF group 280).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,7 +111,7 @@ impl Helix {
     /// The points the spline runs through, evenly spaced in angle.
     pub fn fit_points(&self) -> Vec<Vec3> {
         let turns = if self.turns.is_finite() { self.turns.clamp(1e-3, MAX_HELIX_TURNS) } else { 1.0 };
-        let n = ((turns * POINTS_PER_TURN).ceil() as usize).max(4);
+        let n = ((turns * POINTS_PER_TURN).ceil() as usize).max(MIN_POINTS);
         (0..=n).map(|i| self.point_at(i as f64 / n as f64)).collect()
     }
 

@@ -167,6 +167,11 @@ impl Spline {
                     if same(&interp_knots(&u, o.start_tangent.is_some(), o.end_tangent.is_some()).1) {
                         return true;
                     }
+                    // Free ends in a file saved before the natural-end net (#1179): one control
+                    // point per fit point, knots averaged from the parameters.
+                    if o.start_tangent.is_none() && o.end_tangent.is_none() && same(&averaged_knots(&u, false, false).1) {
+                        return true;
+                    }
                     let m = self.control.len();
                     if p < m && m < u.len() && same(&lsq_knots(&u, m, p)) {
                         return true;
@@ -322,6 +327,12 @@ fn interp_knots(u: &[f64], d0: bool, d1: bool) -> (usize, Vec<f64>) {
         knots.extend(std::iter::repeat_n(1.0, p + 1));
         return (p, knots);
     }
+    averaged_knots(u, d0, d1)
+}
+
+/// Degree and clamped knots averaging the parameters `u`, an end with a derivative counting its
+/// parameter twice: one control point per fit point plus one per derivative.
+fn averaged_knots(u: &[f64], d0: bool, d1: bool) -> (usize, Vec<f64>) {
     let m = u.len() + usize::from(d0) + usize::from(d1);
     let p = 3.min(m.saturating_sub(1)).max(1);
     let mut seq = Vec::with_capacity(m);
@@ -948,6 +959,58 @@ mod tests {
         // Three points: five control points, one interior knot.
         let three = Spline::fit_with(&fit[..3], false, FitOptions::default());
         assert!(three.is_valid() && three.control.len() == 5 && three.degree == 3 && passes_through(&three, &fit[..3], 1e-9));
+    }
+
+    /// Five fit points, uneven enough that the parametrisations differ.
+    fn old_net_fit() -> Vec<Vec2> {
+        vec![Vec2::new(0.0, 0.0), Vec2::new(1.0, 3.0), Vec2::new(2.0, 0.0), Vec2::new(5.0, 4.0), Vec2::new(9.0, 1.0)]
+    }
+
+    /// The net CADCraft built before #1179 for free ends: one control point per fit point, the
+    /// knots the averages of the parameters. A DXF saved back then carries exactly this (the
+    /// writer stores no knot parametrisation), so it must still read back with its own
+    /// parametrisation, or the next refit (grip, SPLINEDIT, constraint) changes the shape.
+    fn old_net(fit: &[Vec2], kind: KnotParam) -> Spline {
+        let u = params(fit, kind, false);
+        let p = 3;
+        let mut knots = vec![0.0; p + 1];
+        for j in 1..fit.len() - p {
+            knots.push((j..j + p).map(|i| u[i]).sum::<f64>() / p as f64);
+        }
+        knots.extend(std::iter::repeat_n(1.0, p + 1));
+        Spline { degree: p, knots, control: fit.to_vec(), fit: fit.to_vec(), fit_opts: FitOptions::default(), ..Spline::default() }
+    }
+
+    #[test]
+    fn old_uniform_net_is_still_recognised_as_uniform() {
+        let s = old_net(&old_net_fit(), KnotParam::Uniform);
+        assert!(s.is_valid());
+        assert_eq!(s.infer_knot_param(), KnotParam::Uniform);
+    }
+
+    #[test]
+    fn old_sqrt_net_is_still_recognised_as_sqrt() {
+        let s = old_net(&old_net_fit(), KnotParam::SqrtChord);
+        assert!(s.is_valid());
+        assert_eq!(s.infer_knot_param(), KnotParam::SqrtChord);
+    }
+
+    #[test]
+    fn old_chord_net_is_still_recognised_as_chord() {
+        let s = old_net(&old_net_fit(), KnotParam::Chord);
+        assert!(s.is_valid());
+        assert_eq!(s.infer_knot_param(), KnotParam::Chord);
+    }
+
+    /// The net this version builds with free ends (two more control points than fit points, the
+    /// parameters as interior knots) is recognised for every parametrisation too.
+    #[test]
+    fn new_net_is_recognised_for_each_parametrisation() {
+        for kind in KnotParam::ALL {
+            let s = Spline::fit_with(&old_net_fit(), false, FitOptions { knots: kind, ..FitOptions::default() });
+            assert_eq!(s.control.len(), old_net_fit().len() + 2);
+            assert_eq!(s.infer_knot_param(), kind);
+        }
     }
 
     #[test]
