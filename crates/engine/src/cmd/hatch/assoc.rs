@@ -18,7 +18,7 @@ use std::sync::Arc;
 use cadcraft_doc::{Drawing, EntityKind, Handle, Hatch, HatchLoop, entity_bounds};
 use cadcraft_geom::{Bounds2, PolyVertex, Polyline, Vec2, region, shoelace};
 
-use super::{closed_loop, gap_tolerance, object_polys};
+use super::{closed_loop, gap_tolerance, object_polys, outline_tolerance, with_arcs};
 
 /// Upper bound on the source objects of one loop that are traced (hostile files).
 const MAX_SOURCES: usize = 4096;
@@ -86,7 +86,7 @@ fn refill(before: &Drawing, after: &Drawing, l: &HatchLoop) -> Refill {
     if nb.is_empty() {
         return Refill::Open;
     }
-    let tol = (nb.width() + nb.height()).max(1e-9) / 20000.0;
+    let tol = outline_tolerance(nb);
     let polys: Vec<Vec<Vec2>> = live.iter().filter_map(|h| after.entity(*h)).flat_map(|e| object_polys(after, e, tol, nb)).collect();
     let snap = ((nb.width() + nb.height()) * 1e-9).max(1e-9);
     let gap = gap_tolerance(after);
@@ -102,7 +102,7 @@ fn refill(before: &Drawing, after: &Drawing, l: &HatchLoop) -> Refill {
         region::outline(&polys, snap, gap)
     };
     match found {
-        Some(pts) => Refill::Loop(pts.into_iter().map(PolyVertex::new).collect()),
+        Some(pts) => Refill::Loop(with_arcs(after, &pts, &live, tol)),
         None => Refill::Open,
     }
 }

@@ -1,6 +1,6 @@
 # Geometry parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (property-based and hostile-input test suite for geometry landed) · **Target:** Autodesk AutoCAD 2027
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** trivial (hatch boundaries from an internal point keep their arcs) · **Target:** Autodesk AutoCAD 2027
 
 CAD users trust numbers: a trimmed endpoint, an offset, an intersection or an area is either right
 to the last displayed digit or the tool is unusable for production drawings. This document
@@ -107,10 +107,13 @@ Where line and arc are supported the results are exact.
 `geom/src/region.rs`: curves are polygonised, crossings split on a grid, vertices merged at
 `tol`, a ray picks the edge and the face is traced by sharpest left turn; islands by
 connectivity (including islands made of separate lines, #163). Caps: 60,000 segments, 4,096
-islands. Missing: **gap tolerance (HPGAPTOL)**, true arcs and curves in boundaries (boundaries
-come out tessellated, so a hatched circle's boundary is a polygon), island detection modes
-beyond the default, boundary sets, and retained associative boundaries for every case. Pattern
-lines are scanline families clipped against the tessellated loops (`render/src/hatch.rs`).
+islands. The traced loop gets the arcs of its objects back (`cmd/hatch.rs`, `with_arcs`): runs
+of vertices on an ARC, a CIRCLE or a bulged polyline segment become bulged vertices with exact
+corners, so a hatched circle is two vertices with bulge 1 and AREA on the hatch matches the
+object (#1167); ellipses and splines in boundaries still come out tessellated. Missing: **gap
+tolerance (HPGAPTOL)**, island detection modes beyond the default, boundary sets, and retained
+associative boundaries for every case. Pattern lines are scanline families clipped against the
+tessellated loops (`render/src/hatch.rs`).
 
 ## Constraint solver (≈ 50%)
 
@@ -155,6 +158,7 @@ Total ≈ 90–140 h; items 1–6 parallelise across two or three agents.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-14 | trivial | HATCH from an internal point keeps the arcs of its outer boundary and of islands made of open curves; associative refills too (#1167) |
 | 2026-10-12 | trivial | TRIM on a closed polyline keeps only the complementary run when the pick lies past the last cut (#726) |
 | 2026-10-12 | minor | Property-based and hostile-input tests for geometry numerics landed (`crates/geom/src/property_tests.rs`): intersections, closest points, three-point arcs, bounds, vector identities; hostile f64s never panic; known answers at 1e6–1e7 |
 | 2026-10-10 | major | First geometry-precision audit: tolerances, curves, intersections, offsets, modify commands, measurement, hatch, solver |

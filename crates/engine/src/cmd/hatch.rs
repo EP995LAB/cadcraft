@@ -6,7 +6,7 @@ pub(super) use patfile::{lines_for, run_patterns};
 
 use cadcraft_color::Color;
 use cadcraft_doc::{Drawing, Entity, EntityKind, Gradient, Handle, Hatch, HatchLoop, Space, entity_bounds};
-use cadcraft_geom::{Bounds2, PolyVertex, Polyline, Vec2, point_in_polygon};
+use cadcraft_geom::{Bounds2, EPS, PI, PolyVertex, Polyline, Segment, TAU, Vec2, angle_in_sweep, arc_to_bulge, ccw_sweep, point_in_polygon};
 use serde_json::{Value, json};
 
 use super::helpers::lwpoly;
@@ -39,7 +39,7 @@ pub fn specs() -> Vec<CommandSpec> {
 fn outlines(d: &Drawing, space: &Space, near: Option<Bounds2>) -> (Vec<Vec<Vec2>>, Vec<Handle>) {
     let Some(store) = d.space(space) else { return (Vec::new(), Vec::new()) };
     let ext = d.extents(space);
-    let tol = (ext.width() + ext.height()).max(1e-9) / 20000.0;
+    let tol = outline_tolerance(ext);
     let mut out = Vec::new();
     let mut owners = Vec::new();
     for e in store.iter() {
@@ -57,6 +57,11 @@ fn outlines(d: &Drawing, space: &Space, near: Option<Bounds2>) -> (Vec<Vec<Vec2>
         out.extend(polys);
     }
     (out, owners)
+}
+
+/// The tolerance boundary candidates are tessellated with, for objects within `ext`.
+pub(super) fn outline_tolerance(ext: Bounds2) -> f64 {
+    (ext.width() + ext.height()).max(1e-9) / 20000.0
 }
 
 /// An object's outline as polylines (tolerance `tol`), infinite lines clipped to a generous
@@ -124,6 +129,157 @@ fn island_curve(d: &Drawing, e: &Entity) -> bool {
             | EntityKind::Polyline3d(_)
             | EntityKind::Spline(_)
     ) && closed_loop(d, e).is_none()
+}
+
+/// Upper bound on outline vertices × circular pieces matched when a traced loop gets its arcs
+/// back; beyond it the loop stays as traced (hostile input).
+const MAX_ARC_MATCHES: usize = 20_000_000;
+
+/// A circular piece of a boundary object: an ARC, a CIRCLE or a bulged polyline segment.
+struct Round {
+    center: Vec2,
+    radius: f64,
+    /// Counter-clockwise angle span; `None` for a whole circle.
+    span: Option<(f64, f64)>,
+}
+
+impl Round {
+    /// `p` lies on the piece, within `eps`.
+    fn has(&self, p: Vec2, eps: f64) -> bool {
+        if (p.dist(self.center) - self.radius).abs() > eps {
+            return false;
+        }
+        let Some((start, end)) = self.span else { return true };
+        let slack = eps / self.radius;
+        ccw_sweep(start, end) + 2.0 * slack >= TAU || angle_in_sweep(self.center.angle_to(p), start - slack, end + slack)
+    }
+}
+
+/// The circular pieces of the objects `sources`.
+fn rounds_of(d: &Drawing, sources: &[Handle]) -> Vec<Round> {
+    let mut out = Vec::new();
+    for e in sources.iter().filter_map(|h| d.entity(*h)) {
+        match &e.kind {
+            EntityKind::Circle(c) => out.push(Round { center: c.center.xy(), radius: c.radius, span: None }),
+            EntityKind::Arc(a) => {
+                let g = cadcraft_geom::Arc::new(a.center.xy(), a.radius, a.start, a.end);
+                out.push(Round { center: g.center, radius: g.radius, span: Some((g.start, g.end)) });
+            }
+            EntityKind::LwPolyline(p) => {
+                for seg in (Polyline { vertices: p.vertices.clone(), closed: p.closed }).segments() {
+                    if let Segment::Arc { arc, .. } = seg {
+                        out.push(Round { center: arc.center, radius: arc.radius, span: Some((arc.start, arc.end)) });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out.retain(|r| r.center.is_finite() && r.radius.is_finite() && r.radius > EPS);
+    out
+}
+
+/// A traced loop with the arcs of its objects put back (#1167): a run of outline vertices that
+/// lies on an ARC, a CIRCLE or a bulged segment of a polyline among `sources` becomes one
+/// vertex with the matching bulge (two above a half-turn: a whole circle is two vertices with
+/// bulge 1, as `closed_loop` makes it), and the corners between pieces move from the traced
+/// chords to where the pieces meet, so the hatch keeps the exact boundary. `tol` is the
+/// tolerance the outline was tessellated with; straight pieces stay as traced.
+pub(super) fn with_arcs(d: &Drawing, outline: &[Vec2], sources: &[Handle], tol: f64) -> Vec<PolyVertex> {
+    let flat = |pts: &[Vec2]| pts.iter().map(|p| PolyVertex::new(*p)).collect::<Vec<_>>();
+    let rounds = rounds_of(d, sources);
+    let n = outline.len();
+    if rounds.is_empty() || n < 3 || n.saturating_mul(rounds.len()) > MAX_ARC_MATCHES {
+        return flat(outline);
+    }
+    let at = |i: usize| outline.get(i % n).copied();
+    let eps_of = |r: &Round| tol.max(r.radius * 1e-6) * 2.0 + EPS;
+    // The piece each edge (vertex i to i + 1) lies on: both ends and the middle, so that a chord
+    // between two points of a circle doesn't pass for its arc.
+    let mut piece: Vec<Option<usize>> = Vec::with_capacity(n);
+    let mut last = 0;
+    for i in 0..n {
+        let (Some(a), Some(b)) = (at(i), at(i + 1)) else { return flat(outline) };
+        let fits = |k: usize| rounds.get(k).is_some_and(|r| [a, b, a.mid(b)].iter().all(|p| r.has(*p, eps_of(r))));
+        let k = if fits(last) { Some(last) } else { (0..rounds.len()).find(|&k| fits(k)) };
+        last = k.unwrap_or(last);
+        piece.push(k);
+    }
+    if piece.iter().all(Option::is_none) {
+        return flat(outline);
+    }
+    let piece_at = |i: usize| piece.get(i % n).copied().flatten();
+    let circle_of = |r: &Round| cadcraft_geom::Circle::new(r.center, r.radius);
+    let nearest = |hits: Vec<Vec2>, p: Vec2, reach: f64, r: &Round| {
+        hits.into_iter().min_by(|x, y| x.dist(p).total_cmp(&y.dist(p))).filter(|c| c.dist(p) <= reach).unwrap_or_else(|| circle_of(r).closest(p))
+    };
+    // Vertex `i` where the pieces or lines of the edges either side of it meet (a traced corner
+    // sits on a chord, up to `tol` off the circle).
+    let corner = |i: usize| -> Option<Vec2> {
+        let p = at(i)?;
+        let (before, after) = (piece_at(i + n - 1), piece_at(i));
+        let (q, r) = match (before.and_then(|k| rounds.get(k)), after.and_then(|k| rounds.get(k))) {
+            (None, None) => return Some(p),
+            (Some(r), None) => (at(i + 1)?, r),
+            (None, Some(r)) => (at(i + n - 1)?, r),
+            (Some(_), Some(_)) if before == after => return Some(p),
+            (Some(r1), Some(r2)) => {
+                if r1.center.near(r2.center, EPS) && (r1.radius - r2.radius).abs() <= EPS {
+                    return Some(circle_of(r1).closest(p));
+                }
+                let hits = cadcraft_geom::circle_circle(&circle_of(r1), &circle_of(r2));
+                return Some(nearest(hits, p, 8.0 * eps_of(r1).max(eps_of(r2)), r1));
+            }
+        };
+        if q.near(p, EPS) {
+            return Some(circle_of(r).closest(p));
+        }
+        let hits = cadcraft_geom::line_circle(&cadcraft_geom::Line::new(p, q), &circle_of(r)).into_iter().map(|(c, _)| c).collect();
+        Some(nearest(hits, p, 8.0 * eps_of(r), r))
+    };
+    // Start where a run begins; with every edge on one piece the loop is a whole circle.
+    let start = (0..n).find(|&i| piece_at(i) != piece_at(i + n - 1)).unwrap_or(0);
+    let mut out = Vec::with_capacity(n);
+    let mut i = 0;
+    while i < n {
+        let Some(k) = piece_at(start + i) else {
+            out.extend(corner(start + i).map(PolyVertex::new));
+            i += 1;
+            continue;
+        };
+        let (Some(r), Some(a)) = (rounds.get(k), corner(start + i)) else { return flat(outline) };
+        // The run of edges on this piece and the signed angle the traced points turn through.
+        let mut len = 0;
+        let mut sweep = 0.0;
+        while i + len < n && piece_at(start + i + len) == Some(k) {
+            if let (Some(p), Some(q)) = (at(start + i + len), at(start + i + len + 1)) {
+                let (u, v) = (p - r.center, q - r.center);
+                sweep += u.cross(v).atan2(u.dot(v));
+            }
+            len += 1;
+        }
+        if len == n {
+            let b = if sweep >= 0.0 { 1.0 } else { -1.0 };
+            return vec![PolyVertex::with_bulge(r.center - Vec2::X * r.radius, b), PolyVertex::with_bulge(r.center + Vec2::X * r.radius, b)];
+        }
+        // The turn between the exact corners, when it agrees with the traced one.
+        let Some(b) = corner(start + i + len) else { return flat(outline) };
+        let (sa, sb) = (r.center.angle_to(a), r.center.angle_to(b));
+        let exact = if sweep >= 0.0 { ccw_sweep(sa, sb) } else { -ccw_sweep(sb, sa) };
+        if (exact.abs() - sweep.abs()).abs() <= 1e-3 + 2.0 * eps_of(r) / r.radius {
+            sweep = exact;
+        }
+        // Up to a half-turn (a semicircle's sum of steps may top π by rounding) in one vertex.
+        if sweep.abs() <= PI * (1.0 + 1e-9) {
+            out.push(PolyVertex::with_bulge(a, arc_to_bulge(sweep)));
+        } else {
+            let half = sweep / 2.0;
+            out.push(PolyVertex::with_bulge(a, arc_to_bulge(half)));
+            out.push(PolyVertex::with_bulge(Vec2::polar(r.center, r.radius, sa + half), arc_to_bulge(half)));
+        }
+        i += len;
+    }
+    out
 }
 
 /// HPGAPTOL: the widest gap between curve ends that still closes a boundary (0–5000).
@@ -209,7 +365,7 @@ pub(crate) fn loops_at(s: &Session, p: Vec2) -> Result<Vec<HatchLoop>> {
     let outer = found.outer;
     let ob = Bounds2::from_points(outer.iter().copied());
     let sources = handles_of(&owners, &found.outer_sources);
-    let mut loops = vec![HatchLoop { vertices: outer.iter().map(|q| PolyVertex::new(*q)).collect(), outer: true, sources }];
+    let mut loops = vec![HatchLoop { vertices: with_arcs(d, &outer, &sources, outline_tolerance(ext)), outer: true, sources }];
     // Islands: closed objects entirely inside the outer loop that don't contain the pick point.
     if let Some(store) = d.space(&space) {
         for e in store.iter() {
@@ -237,7 +393,7 @@ pub(crate) fn loops_at(s: &Session, p: Vec2) -> Result<Vec<HatchLoop>> {
             && island.sources.iter().all(|&i| owners.get(i).and_then(|h| d.entity(*h)).is_some_and(|e| island_curve(d, e)));
         if open_curves {
             let sources = handles_of(&owners, &island.sources);
-            loops.push(HatchLoop { vertices: island.outline.into_iter().map(PolyVertex::new).collect(), outer: false, sources });
+            loops.push(HatchLoop { vertices: with_arcs(d, &island.outline, &sources, outline_tolerance(ext)), outer: false, sources });
         }
     }
     Ok(loops)
