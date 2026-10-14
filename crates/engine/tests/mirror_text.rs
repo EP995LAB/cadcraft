@@ -220,3 +220,133 @@ fn attribute_of_a_mirrored_insert_does_not_depend_on_the_definition_default() {
         assert!(attrib_insert(&s).near(Vec2::new(-10.0, 0.0), 1e-9), "{name} after ATTSYNC: {:?}", attrib_insert(&s));
     }
 }
+
+// ---- block attributes: only the ATTDEF is mirrored into a box; what is placed from it follows the
+// ---- block's matrix exactly as before (rotation unchanged when the block mirrors, never measured)
+
+use cadcraft_engine::doc::{Attrib, MText, MultilineAttrib, Text};
+use cadcraft_engine::geom::Vec3;
+
+fn first_attrib(s: &Session, ins: Handle) -> Attrib {
+    match &s.doc().unwrap().entity(ins).unwrap().kind {
+        EntityKind::Insert(i) => i.attribs.first().unwrap().clone(),
+        k => panic!("expected an INSERT: {k:?}"),
+    }
+}
+
+/// An ATTDEF `T` whose single-line text sits at (10, 10) and whose multiline text sits at
+/// `(10 + dx, 10)`, both rotated by `rot`.
+fn multiline_attdef(dx: f64, rot: f64) -> Attrib {
+    let t: Text = serde_json::from_value(json!({ "insert": [10, 10, 0], "height": 5, "value": "TAG VALUE", "rotation": rot })).unwrap();
+    let mt = MText {
+        insert: Vec3::new(10.0 + dx, 10.0, 0.0),
+        height: 5.0,
+        width: 0.0,
+        attach: 1,
+        rotation: rot,
+        style: "Standard".into(),
+        contents: "A MUCH LONGER MULTILINE DEFAULT".into(),
+        line_spacing: 1.0,
+        line_spacing_exact: false,
+        columns: None,
+    };
+    Attrib {
+        tag: "T".into(),
+        text: t,
+        invisible: false,
+        constant: false,
+        prompt: String::new(),
+        props: Default::default(),
+        multiline: Some(MultilineAttrib { mtext: mt, read_as: "A MUCH LONGER MULTILINE DEFAULT".into() }),
+        modes: Default::default(),
+    }
+}
+
+fn make_block(s: &mut Session, name: &str, hs: &[Handle]) {
+    let hs: Vec<Value> = hs.iter().map(|h| json!(h.hex())).collect();
+    s.execute("block", &json!({ "name": name, "base": [0, 0], "handles": hs, "keep": "delete" })).unwrap();
+}
+
+#[test]
+fn attribute_of_a_block_inserted_with_a_negative_scale_keeps_its_rotation() {
+    // INSERT (interactive INSERT and XREF attach go through the same code) and ATTSYNC place the
+    // attribute from the block's matrix: when the block mirrors the text keeps its rotation, when
+    // it only turns the text turns with it.
+    let mut s = Session::new();
+    s.execute("attdef", &json!({ "tag": "T", "default": "x", "at": [10, 0], "height": 5 })).unwrap();
+    let hs: Vec<Handle> = s.doc().unwrap().model.iter().map(|e| e.handle).collect();
+    make_block(&mut s, "B", &hs);
+    for (sc, at, rot) in [([-1.0, 1.0], -10.0, 0.0), ([1.0, -1.0], 10.0, 0.0), ([-1.0, -1.0], -10.0, std::f64::consts::PI)] {
+        let r = s.execute("insert", &json!({ "name": "B", "at": [0, 0], "scale": sc, "attribs": { "T": "VALUE" } })).unwrap();
+        let ins = handle(&r["handle"]);
+        for stage in ["INSERT", "ATTSYNC"] {
+            if stage == "ATTSYNC" {
+                s.execute("attsync", &json!({ "name": "B" })).unwrap();
+            }
+            let a = first_attrib(&s, ins);
+            assert!(a.text.insert.xy().near(Vec2::new(at, 0.0), 1e-9), "{sc:?} {stage}: insert {:?}", a.text.insert);
+            assert!((a.text.rotation - rot).abs() < 1e-9, "{sc:?} {stage}: rotation {}", a.text.rotation);
+            assert!((a.text.height - 5.0).abs() < 1e-9, "{sc:?} {stage}: height {}", a.text.height);
+            assert_eq!(a.text.value, "VALUE");
+        }
+    }
+}
+
+#[test]
+fn multiline_attribute_of_a_mirrored_block_takes_the_rotation_of_its_text() {
+    // A definition with a multiline text two units right of its single-line text: after INSERT
+    // with scale [-1, 1] and after ATTSYNC the multiline text sits two units left of the text and
+    // turns exactly as the text does (not upside down while the text reads forward).
+    let mut s = Session::new();
+    let h = s.add_entity(EntityKind::AttDef(multiline_attdef(2.0, 0.0))).unwrap();
+    make_block(&mut s, "MB", &[h]);
+    let r = s.execute("insert", &json!({ "name": "MB", "at": [0, 0], "scale": [-1, 1] })).unwrap();
+    let ins = handle(&r["handle"]);
+    for stage in ["INSERT", "ATTSYNC"] {
+        if stage == "ATTSYNC" {
+            s.execute("attsync", &json!({ "name": "MB" })).unwrap();
+        }
+        let a = first_attrib(&s, ins);
+        let m = &a.multiline.as_ref().unwrap().mtext;
+        assert!(a.text.insert.xy().near(Vec2::new(-10.0, 10.0), 1e-9), "{stage}: text {:?}", a.text.insert);
+        assert!(m.insert.xy().near(Vec2::new(-12.0, 10.0), 1e-9), "{stage}: multiline {:?}", m.insert);
+        assert!(a.text.rotation.abs() < 1e-9, "{stage}: text rotation {}", a.text.rotation);
+        assert!((m.rotation - a.text.rotation).abs() < 1e-9, "{stage}: multiline {}, text {}", m.rotation, a.text.rotation);
+    }
+}
+
+#[test]
+fn attdef_text_and_its_multiline_keep_their_place_under_mirror() {
+    // The multiline text of an ATTDEF is carried by the mapping of the ATTDEF's text, not measured
+    // on its own: its offset in the text's frame and its turn relative to the text survive MIRROR
+    // about any line.
+    for (rot, dx, p1, p2) in [
+        (0.0, 2.0, [0.0, 0.0], [0.0, 100.0]),
+        (0.0, 2.0, [0.0, 0.0], [100.0, 0.0]),
+        (0.5, 3.0, [0.0, 0.0], [100.0, 100.0]),
+        (0.5, 3.0, [5.0, 0.0], [5.0, 100.0]),
+    ] {
+        let mut s = Session::new();
+        let src = multiline_attdef(dx, rot);
+        let h = s.add_entity(EntityKind::AttDef(src.clone())).unwrap();
+        let c = mirror(&mut s, h, p1, p2);
+        let EntityKind::AttDef(a) = &s.doc().unwrap().entity(c).unwrap().kind else { panic!("expected an ATTDEF") };
+        let got = a.multiline.as_ref().unwrap().mtext.clone();
+        let want_off = (src.multiline.as_ref().unwrap().mtext.insert.xy() - src.text.insert.xy()).rotate(-rot);
+        let got_off = (got.insert.xy() - a.text.insert.xy()).rotate(-a.text.rotation);
+        assert!(got_off.near(want_off, 1e-6), "{p1:?}-{p2:?}: offset in the text's frame {got_off:?}, was {want_off:?}");
+        let turn = |x: f64| cadcraft_engine::geom::norm_angle(x);
+        assert!(
+            (turn(got.rotation - a.text.rotation)).min(turn(a.text.rotation - got.rotation)).abs() < 1e-6,
+            "{p1:?}-{p2:?}: multiline {} against text {}",
+            got.rotation,
+            a.text.rotation
+        );
+        // An attribute made from the mirrored definition keeps them together too.
+        make_block(&mut s, "MB", &[c]);
+        let r = s.execute("insert", &json!({ "name": "MB", "at": [0, 0] })).unwrap();
+        let at = first_attrib(&s, handle(&r["handle"]));
+        let m = at.multiline.as_ref().unwrap().mtext.clone();
+        assert!(((m.insert.xy() - at.text.insert.xy()).rotate(-at.text.rotation)).near(want_off, 1e-6), "{p1:?}-{p2:?}: inserted attribute");
+    }
+}

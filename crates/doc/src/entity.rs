@@ -396,33 +396,46 @@ pub struct MultilineAttrib {
 }
 
 impl MultilineAttrib {
-    /// This text placed by `m` (a block reference's transform, for its attribute made from a
-    /// definition): it follows the block, turning with it even when `m` mirrors, like the
-    /// attribute's own text.
+    /// This text carried along with its attribute by `m` as a plain move (a transform of the
+    /// block reference that holds it: MOVE, ROTATE, a positive scale): its point moves with `m`,
+    /// it turns with it even when `m` mirrors, like the attribute's own text there.
     pub fn transformed(&self, m: &Mat3) -> MultilineAttrib {
         let mut mtext = self.mtext.clone();
         follow_mtext(&mut mtext, m);
         MultilineAttrib { mtext, read_as: self.read_as.clone() }
     }
 
-    /// This text of an attribute definition under `m` (see [`EntityKind::transform_measured`]):
-    /// readable in its mirrored box when `m` mirrors.
-    fn transformed_measured(&self, m: &Mat3, text_box: &dyn Fn(&EntityKind) -> Bounds2) -> MultilineAttrib {
-        let mut k = EntityKind::MText(self.mtext.clone());
-        k.transform_measured(m, text_box);
-        let mtext = if let EntityKind::MText(t) = k { t } else { self.mtext.clone() };
+    /// This text of an attribute made from its definition by the block transform `m` (INSERT,
+    /// ATTSYNC): placed exactly as [`Text::placed`] places the attribute's own text, so the two
+    /// never part (its point moves with `m`, it is scaled, and it turns with `m` unless `m`
+    /// mirrors).
+    pub fn placed(&self, m: &Mat3) -> MultilineAttrib {
+        let mut mtext = self.mtext.clone();
+        let q = m.apply(mtext.insert.xy());
+        mtext.insert.x = q.x;
+        mtext.insert.y = q.y;
+        mtext.rotation = cadcraft_geom::norm_angle(mtext.rotation + placing_turn(m));
+        scale_mtext(&mut mtext, m.scale_factor());
         MultilineAttrib { mtext, read_as: self.read_as.clone() }
     }
 }
 
 impl Text {
-    /// This text placed by `m`, a block reference's transform (for an attribute made from a
-    /// definition): it follows the block, turning with it even when `m` mirrors.
-    pub fn followed(&self, m: &Mat3) -> Text {
+    /// This text, the definition's, placed by `m`, the transform of a block reference, as the
+    /// attribute made from it (INSERT, ATTSYNC, a multileader's block content): its points move
+    /// with `m` and its height is scaled; it turns with `m`, except that a mirroring `m` leaves
+    /// its rotation alone (MIRRTEXT 0). It is not measured for a mirror image: where it lands
+    /// depends on `m` alone, not on what the definition's text happens to say.
+    pub fn placed(&self, m: &Mat3) -> Text {
         let mut t = self.clone();
-        transform_text(&mut t, m, m.scale_factor(), m.rotation());
+        transform_text(&mut t, m, m.scale_factor(), placing_turn(m));
         t
     }
+}
+
+/// How far a text placed by the block transform `m` turns: with `m`, but not when `m` mirrors.
+fn placing_turn(m: &Mat3) -> f64 {
+    if m.is_mirroring() { 0.0 } else { m.rotation() }
 }
 
 impl Attrib {
@@ -1296,12 +1309,21 @@ impl EntityKind {
             EntityKind::AttDef(a) => {
                 if mirror {
                     let local = local_text_box(&a.text, &|c| text_box(&EntityKind::AttDef(Attrib { text: c, ..a.clone() })));
-                    mirror_text(&mut a.text, m, s, local);
+                    let frame = mirror_text(&mut a.text, m, s, local);
+                    // The multiline text keeps its place in the text's own frame: the same
+                    // mapping carries its point, it turns as the text does.
+                    if let Some(ml) = &mut a.multiline {
+                        let q = frame.carry(ml.mtext.insert.xy());
+                        ml.mtext.insert.x = q.x;
+                        ml.mtext.insert.y = q.y;
+                        ml.mtext.rotation = cadcraft_geom::norm_angle(ml.mtext.rotation + frame.turn());
+                        scale_mtext(&mut ml.mtext, s);
+                    }
                 } else {
                     transform_text(&mut a.text, m, s, rot);
-                }
-                if let Some(ml) = &mut a.multiline {
-                    *ml = ml.transformed_measured(m, text_box);
+                    if let Some(ml) = &mut a.multiline {
+                        *ml = ml.transformed(m);
+                    }
                 }
             }
             EntityKind::MText(t) => {
@@ -1576,10 +1598,32 @@ fn local_text_box(t: &Text, measure: &dyn Fn(Text) -> Bounds2) -> Bounds2 {
     measure(c)
 }
 
+/// How [`mirror_text`] carried a text: a point in the text's own frame (`at`, turned by
+/// `rotation`) goes to the same place in the frame placed at `q`, turned by `dir`, scaled by `s`.
+struct MirrorFrame {
+    at: Vec2,
+    rotation: f64,
+    q: Vec2,
+    dir: f64,
+    s: f64,
+}
+
+impl MirrorFrame {
+    /// Where the point `p` of the mirrored text goes.
+    fn carry(&self, p: Vec2) -> Vec2 {
+        self.q + ((p - self.at).rotate(-self.rotation) * self.s).rotate(self.dir)
+    }
+    /// How far the text turned.
+    fn turn(&self) -> f64 {
+        self.dir - self.rotation
+    }
+}
+
 /// A TEXT, ATTRIB or ATTDEF under a mirroring transform with MIRRTEXT 0: readable, in the box its
 /// mirror image would occupy (`local`, see [`local_text_box`]); its justification stays, its
-/// points keep their place in the text's own frame.
-fn mirror_text(t: &mut Text, m: &Mat3, s: f64, local: Bounds2) {
+/// points keep their place in the text's own frame. Returns the mapping it applied, for what
+/// belongs to the text (an ATTDEF's multiline text).
+fn mirror_text(t: &mut Text, m: &Mat3, s: f64, local: Bounds2) -> MirrorFrame {
     let at = t.justify_point();
     let rotation = match t.align_pt {
         Some(a) if matches!(t.halign, HAlign::Aligned | HAlign::Fit) => at.angle_to(a.xy()),
@@ -1588,8 +1632,9 @@ fn mirror_text(t: &mut Text, m: &Mat3, s: f64, local: Bounds2) {
     // A rotation that isn't a number (a hostile file) draws as 0, so it mirrors as 0.
     let rotation = if rotation.is_finite() { rotation } else { 0.0 };
     let (q, dir) = mirrored_readable(m, at, rotation, local);
+    let frame = MirrorFrame { at, rotation, q, dir, s };
     let carry = |p: &mut Vec3| {
-        let w = q + ((p.xy() - at).rotate(-rotation) * s).rotate(dir);
+        let w = frame.carry(p.xy());
         p.x = w.x;
         p.y = w.y;
     };
@@ -1599,4 +1644,5 @@ fn mirror_text(t: &mut Text, m: &Mat3, s: f64, local: Bounds2) {
     }
     t.height *= s;
     t.rotation = cadcraft_geom::norm_angle(dir);
+    frame
 }

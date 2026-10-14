@@ -89,7 +89,7 @@ fn synced(blk: &Block, defs: &[&Attrib], ins: &Insert) -> Vec<Attrib> {
     defs.iter()
         .map(|ad| {
             // As in `insert_with`: the attribute follows the block, it is not measured.
-            let mut t = ad.text.followed(&m);
+            let mut t = ad.text.placed(&m);
             t.value = ins
                 .attribs
                 .iter()
@@ -103,7 +103,7 @@ fn synced(blk: &Block, defs: &[&Attrib], ins: &Insert) -> Vec<Attrib> {
                 constant: false,
                 prompt: String::new(),
                 props: Default::default(),
-                multiline: ad.multiline.as_ref().map(|ml| ml.transformed(&m)),
+                multiline: ad.multiline.as_ref().map(|ml| ml.placed(&m)),
                 modes: ad.modes.for_reference(),
             }
         })
