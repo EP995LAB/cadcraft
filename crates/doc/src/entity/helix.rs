@@ -87,6 +87,16 @@ impl Helix {
         Vec3::new(p.x, p.y, self.center.z + self.height * t)
     }
 
+    /// The direction of the helix seen from above at `t` in `0..=1` (its tangent, the radius
+    /// changing and the angle turning); zero for a helix that doesn't move.
+    pub fn tangent_at(&self, t: f64) -> Vec2 {
+        let sign = if self.ccw { 1.0 } else { -1.0 };
+        let turn = sign * TAU * self.turns;
+        let a = self.start_angle + turn * t;
+        let r = self.base_radius + (self.top_radius - self.base_radius) * t;
+        Vec2::new(a.cos(), a.sin()) * (self.top_radius - self.base_radius) + Vec2::new(-a.sin(), a.cos()) * (r * turn)
+    }
+
     pub fn start_point(&self) -> Vec3 {
         self.point_at(0.0)
     }
@@ -102,12 +112,19 @@ impl Helix {
     }
 
     /// The helix as a cubic spline seen from above, and the height of each control point: the
-    /// spline through [`Helix::fit_points`] with evenly spaced knots, so the height, linear in
-    /// the parameter, is exact at each control point's Greville abscissa.
+    /// spline through [`Helix::fit_points`] with evenly spaced knots and the helix's own end
+    /// tangents (a free end would be straight, off the circle), so the height, linear in the
+    /// parameter, is exact at each control point's Greville abscissa.
     pub fn spline3(&self) -> (GSpline, Vec<f64>) {
         let fit = self.fit_points();
         let xy: Vec<Vec2> = fit.iter().map(|p| p.xy()).collect();
-        let sp = GSpline::fit_with(&xy, false, FitOptions { knots: KnotParam::Uniform, ..FitOptions::default() });
+        let opts = FitOptions {
+            knots: KnotParam::Uniform,
+            start_tangent: Some(self.tangent_at(0.0)),
+            end_tangent: Some(self.tangent_at(1.0)),
+            ..FitOptions::default()
+        };
+        let sp = GSpline::fit_with(&xy, false, opts);
         let (lo, hi) = sp.domain();
         let span = if hi - lo > 1e-12 { hi - lo } else { 1.0 };
         let p = sp.degree.max(1);
