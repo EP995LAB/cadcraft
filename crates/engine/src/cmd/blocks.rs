@@ -193,12 +193,9 @@ pub(crate) fn insert_with(
             if ad.constant {
                 continue;
             }
-            let mut t = ad.text.clone();
-            let mut k = EntityKind::Text(t.clone());
-            k.transform(&m);
-            if let EntityKind::Text(tt) = k {
-                t = tt;
-            }
+            // The attribute follows the block whatever value it takes: a mirrored block turns it
+            // like its other texts, it is not measured for a mirror image (see `Text::followed`).
+            let mut t = ad.text.followed(&m);
             t.value = attedit::value_for(values, &ad.tag).unwrap_or_else(|| ad.text.value.clone());
             ins.attribs.push(Attrib {
                 tag: ad.tag.clone(),

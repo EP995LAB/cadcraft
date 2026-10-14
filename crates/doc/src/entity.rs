@@ -397,17 +397,37 @@ pub struct MultilineAttrib {
 
 impl MultilineAttrib {
     /// This text placed by `m` (a block reference's transform, for its attribute made from a
-    /// definition).
+    /// definition): it follows the block, turning with it even when `m` mirrors, like the
+    /// attribute's own text.
     pub fn transformed(&self, m: &Mat3) -> MultilineAttrib {
+        let mut mtext = self.mtext.clone();
+        follow_mtext(&mut mtext, m);
+        MultilineAttrib { mtext, read_as: self.read_as.clone() }
+    }
+
+    /// This text of an attribute definition under `m` (see [`EntityKind::transform_measured`]):
+    /// readable in its mirrored box when `m` mirrors.
+    fn transformed_measured(&self, m: &Mat3, text_box: &dyn Fn(&EntityKind) -> Bounds2) -> MultilineAttrib {
         let mut k = EntityKind::MText(self.mtext.clone());
-        k.transform(m);
+        k.transform_measured(m, text_box);
         let mtext = if let EntityKind::MText(t) = k { t } else { self.mtext.clone() };
         MultilineAttrib { mtext, read_as: self.read_as.clone() }
     }
 }
 
+impl Text {
+    /// This text placed by `m`, a block reference's transform (for an attribute made from a
+    /// definition): it follows the block, turning with it even when `m` mirrors.
+    pub fn followed(&self, m: &Mat3) -> Text {
+        let mut t = self.clone();
+        transform_text(&mut t, m, m.scale_factor(), m.rotation());
+        t
+    }
+}
+
 impl Attrib {
-    /// Move a multiline attribute's text by `m` along with the attribute (nothing for others).
+    /// Move a multiline attribute's text by `m` along with the attribute (nothing for others); it
+    /// follows `m` as the attribute's own text does.
     pub fn transform_multiline(&mut self, m: &Mat3) {
         if let Some(ml) = &mut self.multiline {
             *ml = ml.transformed(m);
@@ -1280,7 +1300,9 @@ impl EntityKind {
                 } else {
                     transform_text(&mut a.text, m, s, rot);
                 }
-                a.transform_multiline(m);
+                if let Some(ml) = &mut a.multiline {
+                    *ml = ml.transformed_measured(m, text_box);
+                }
             }
             EntityKind::MText(t) => {
                 if mirror {
@@ -1291,14 +1313,9 @@ impl EntityKind {
                     t.insert.x = q.x;
                     t.insert.y = q.y;
                     t.rotation = cadcraft_geom::norm_angle(rotation);
+                    scale_mtext(t, s);
                 } else {
-                    t3(&mut t.insert);
-                    t.rotation = cadcraft_geom::norm_angle(t.rotation + rot);
-                }
-                t.height *= s;
-                t.width *= s;
-                if let Some(c) = &mut t.columns {
-                    c.scale(s);
+                    follow_mtext(t, m);
                 }
             }
             EntityKind::Insert(i) => {
@@ -1484,6 +1501,25 @@ impl EntityKind {
             EntityKind::Unknown(_) => Vec::new(),
         }
     }
+}
+
+/// `t` scaled by `s`: its height, width and columns.
+fn scale_mtext(t: &mut MText, s: f64) {
+    t.height *= s;
+    t.width *= s;
+    if let Some(c) = &mut t.columns {
+        c.scale(s);
+    }
+}
+
+/// An MTEXT carried by `m` as a plain move: its point moves with it, it turns with it (mirrored
+/// or not), and it is scaled.
+fn follow_mtext(t: &mut MText, m: &Mat3) {
+    let q = m.apply(t.insert.xy());
+    t.insert.x = q.x;
+    t.insert.y = q.y;
+    t.rotation = cadcraft_geom::norm_angle(t.rotation + m.rotation());
+    scale_mtext(t, m.scale_factor());
 }
 
 /// A text under a transform that does not mirror: its points move with it, it turns with it.

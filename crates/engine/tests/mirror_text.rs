@@ -143,3 +143,80 @@ fn mirror_preview_shows_the_text_where_it_lands() {
     assert!(shown.insert.xy().near(t.insert.xy(), 1e-9), "preview {:?}, result {:?}", shown.insert, t.insert);
     assert!(shown.insert.x < -10.0, "the preview takes the mirrored extent: {:?}", shown.insert);
 }
+
+/// An INSERT (block missing, only its attribute matters) with one multiline attribute at (10, 10).
+fn insert_with_multiline_attrib(s: &mut Session) -> Handle {
+    use cadcraft_engine::doc::{Attrib, Insert, MText, MultilineAttrib, Text};
+    use cadcraft_engine::geom::Vec3;
+    let t: Text = serde_json::from_value(json!({ "insert": [10, 10, 0], "height": 5, "value": "LABEL", "rotation": 0.0 })).unwrap();
+    let mt = MText {
+        insert: Vec3::new(10.0, 10.0, 0.0),
+        height: 5.0,
+        width: 0.0,
+        attach: 1,
+        rotation: 0.0,
+        style: "Standard".into(),
+        contents: "LABEL".into(),
+        line_spacing: 1.0,
+        line_spacing_exact: false,
+        columns: None,
+    };
+    let a = Attrib {
+        tag: "T".into(),
+        text: t,
+        invisible: false,
+        constant: false,
+        prompt: String::new(),
+        props: Default::default(),
+        multiline: Some(MultilineAttrib { mtext: mt, read_as: "LABEL".into() }),
+        modes: Default::default(),
+    };
+    let ins = Insert {
+        block: "NOPE".into(),
+        insert: Vec3::ZERO,
+        scale: Vec3::new(1.0, 1.0, 1.0),
+        rotation: 0.0,
+        attribs: vec![a],
+        cols: 1,
+        rows: 1,
+        col_spacing: 0.0,
+        row_spacing: 0.0,
+    };
+    s.add_entity(EntityKind::Insert(ins)).unwrap()
+}
+
+#[test]
+fn multiline_attribute_of_a_mirrored_insert_follows_the_block_like_its_text() {
+    // An attribute follows its block as before: its multiline text lands where the attribute's
+    // own text lands (mirrored about x = 0: (−10, 10), turned half a turn), not in a mirrored box.
+    let mut s = Session::new();
+    let h = insert_with_multiline_attrib(&mut s);
+    let copy = mirror(&mut s, h, [0.0, 0.0], [0.0, 100.0]);
+    let EntityKind::Insert(i) = &s.doc().unwrap().entity(copy).unwrap().kind else { panic!("expected an INSERT") };
+    let a = i.attribs.first().unwrap();
+    let m = &a.multiline.as_ref().unwrap().mtext;
+    assert!(a.text.insert.xy().near(Vec2::new(-10.0, 10.0), 1e-9), "text {:?}", a.text.insert);
+    assert!(m.insert.xy().near(a.text.insert.xy(), 1e-9), "multiline {:?}, text {:?}", m.insert, a.text.insert);
+    assert!((m.rotation - a.text.rotation).abs() < 1e-9, "multiline {}, text {}", m.rotation, a.text.rotation);
+}
+
+#[test]
+fn attribute_of_a_mirrored_insert_does_not_depend_on_the_definition_default() {
+    // INSERT with a negative X scale and ATTSYNC place the attribute from the block's matrix
+    // alone: the length of the default value the definition happens to carry plays no part.
+    let mut s = Session::new();
+    for (name, default) in [("B1", "x"), ("B2", "a much longer default value")] {
+        s.execute("attdef", &json!({ "tag": "T", "default": default, "at": [10, 0], "height": 5 })).unwrap();
+        let hs: Vec<Value> = s.doc().unwrap().model.iter().map(|e| json!(e.handle.hex())).collect();
+        s.execute("block", &json!({ "name": name, "base": [0, 0], "handles": hs, "keep": "delete" })).unwrap();
+        let r = s.execute("insert", &json!({ "name": name, "at": [0, 0], "scale": [-1, 1], "attribs": { "T": "LONG VALUE HERE" } })).unwrap();
+        let ins = handle(&r["handle"]);
+        let attrib_insert = |s: &Session| match &s.doc().unwrap().entity(ins).unwrap().kind {
+            EntityKind::Insert(i) => i.attribs.first().unwrap().text.insert.xy(),
+            k => panic!("expected an INSERT: {k:?}"),
+        };
+        assert!(attrib_insert(&s).near(Vec2::new(-10.0, 0.0), 1e-9), "{name} at insert: {:?}", attrib_insert(&s));
+        s.execute("attsync", &json!({ "name": name })).unwrap();
+        assert!(attrib_insert(&s).near(Vec2::new(-10.0, 0.0), 1e-9), "{name} after ATTSYNC: {:?}", attrib_insert(&s));
+    }
+}
