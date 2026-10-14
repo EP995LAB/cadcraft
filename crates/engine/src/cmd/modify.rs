@@ -857,7 +857,9 @@ fn prim_to_segments(p: &Prim) -> Vec<Segment> {
     }
 }
 
-/// Trim `h` at the piece containing `pick`. Returns the handles that replace it.
+/// Trim `h` at the piece containing `pick`. Returns the handles of what is left: `h` itself
+/// for the first piece (the object keeps its handle, so what is attached to it follows), new
+/// handles for the others; none when nothing is left.
 pub(crate) fn trim(s: &mut Session, h: Handle, pick: Vec2, edges: Edges) -> Result<Vec<Handle>> {
     if super::curves::is_locked(s, h) {
         return Err(EngineError::Other("The object is on a locked layer.".into()));
@@ -939,8 +941,20 @@ pub(crate) fn trim(s: &mut Session, h: Handle, pick: Vec2, edges: Edges) -> Resu
     let common = e.common.clone();
     let space = s.space();
     let d = s.doc_mut()?;
-    d.remove_entity(h);
+    let mut pieces = pieces.into_iter();
     let mut out = Vec::new();
+    // The first piece (the one at the object's start) stays the same object, as in AutoCAD: it
+    // keeps its handle, so its associative dimensions and hatches, xdata, hyperlinks and
+    // reactors follow it. Nothing left: the object goes.
+    match pieces.next() {
+        Some(k) => {
+            d.modify_entity(h, |e| e.kind = k)?;
+            out.push(h);
+        }
+        None => {
+            d.remove_entity(h);
+        }
+    }
     for k in pieces {
         let nh = d.new_handle();
         if let Some(st) = d.space_mut(&space) {
