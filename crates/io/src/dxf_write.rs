@@ -935,7 +935,8 @@ fn entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bool, cx: &Ctx
                     for (i, ch) in chunks.iter().enumerate() {
                         w.s(if i + 1 == n { 1 } else { 2 }, ch.clone());
                     }
-                    if cx.table_cell_values() {
+                    // Group 1 of the block holds the whole text: over 2049 bytes (the DXF string-group limit) the cell keeps only the plain chunked text, as before 2007.
+                    if cx.table_cell_values() && text.len() <= 2049 {
                         // DXF 2007 and later: the cell value block the DXF Reference documents from
                         // AutoCAD 2007 (301 "cell value block begin", the text in 302 with its
                         // 250-character 303 chunks). Without it AutoCAD shows the cells empty

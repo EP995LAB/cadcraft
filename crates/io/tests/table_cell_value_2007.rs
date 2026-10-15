@@ -191,3 +191,50 @@ fn broken_value_blocks_do_not_panic() {
         let _ = read(table_dxf(cells).as_bytes(), "t.dxf");
     }
 }
+
+fn longest_line(bytes: &[u8]) -> usize {
+    String::from_utf8_lossy(bytes).split('\n').map(|l| l.trim_end_matches('\r').len()).max().unwrap_or(0)
+}
+
+/// A string group is at most 2049 bytes in a DXF line (DXF Reference). The value block's group 1
+/// holds the whole text, so a cell over that limit is written without the block, as before 2007
+/// (plain chunked text only); every other cell keeps its block.
+#[test]
+fn cell_text_over_2049_bytes_is_written_without_the_value_block() {
+    let ascii: String = (0..3000).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+    let cjk: String = (0..800).map(|i| char::from_u32(0x4E00 + i).unwrap_or('x')).collect();
+    assert!(cjk.len() > 2049);
+    for long in [ascii, cjk] {
+        let mut t = issue_table();
+        t.cells[2][1].text = long.clone();
+        let d = drawing(t);
+        let bytes = save(&d, Version::R2018, false);
+        assert!(longest_line(&bytes) <= 2049, "a DXF line is longer than 2049 bytes");
+        let cells = cells_of(&bytes);
+        let cell = &cells[5];
+        for code in [301, 302, 303, 304] {
+            assert!(strings(cell, code).is_empty(), "the long cell has no group {code}");
+        }
+        let plain = format!("{}{}", strings(cell, 2).concat(), strings(cell, 1).concat());
+        assert_eq!(plain, long);
+        for (i, c) in cells.iter().enumerate().filter(|(i, _)| *i != 5) {
+            assert!(pos(c, 301, "CELL_VALUE").is_some(), "cell {i} keeps its value block");
+        }
+        assert_eq!(first_table(&read(&bytes, "t.dxf").unwrap()).cells[2][1].text, long);
+    }
+}
+
+/// Exactly 2049 bytes is still inside the limit: the cell keeps its value block.
+#[test]
+fn cell_text_of_2049_bytes_keeps_the_value_block() {
+    let text: String = (0..2049).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+    let mut t = issue_table();
+    t.cells[2][1].text = text.clone();
+    let d = drawing(t);
+    let bytes = save(&d, Version::R2018, false);
+    assert!(longest_line(&bytes) <= 2049);
+    let cell = &cells_of(&bytes)[5];
+    let begin = pos(cell, 301, "CELL_VALUE").unwrap();
+    assert_eq!(strings(&cell[begin..], 1), vec![text.clone()]);
+    assert_eq!(first_table(&read(&bytes, "t.dxf").unwrap()).cells[2][1].text, text);
+}
