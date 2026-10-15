@@ -175,3 +175,157 @@ fn trimming_a_hatch_boundary_open_ends_the_hatch_link_and_keeps_the_hatch() {
     assert_eq!(hh.loops.len(), 1, "the hatch keeps its shape");
     assert!(s.log.iter().any(|m| m.contains("no longer encloses an area")), "{:?}", s.log);
 }
+
+// A polyline keeps its handle when it is trimmed, but its vertices are renumbered, so a
+// dimension attached to one of its vertices (`AssocSnap::Vertex`) would follow the wrong vertex.
+// Those attachments are dropped and the dimension keeps its points and its measurement.
+
+/// A polyline 0,0 - 50,0 - 100,0 - 100,50 and a linear dimension of its last segment.
+fn polyline_with_dim(s: &mut Session, p1: [f64; 2], p2: [f64; 2], at: [f64; 2]) -> (Handle, Handle) {
+    let pl = handle(&s.execute("pline", &json!({ "points": [[0, 0], [50, 0], [100, 0], [100, 50]] })).unwrap());
+    let d = handle(&s.execute("dimlinear", &json!({ "p1": p1, "p2": p2, "at": at })).unwrap());
+    (pl, d)
+}
+
+fn vertex_attachments(s: &Session, d: Handle, pl: Handle) -> Vec<usize> {
+    let mut v: Vec<usize> = dim(s, d)
+        .assoc
+        .iter()
+        .filter(|a| a.handle == pl)
+        .filter_map(|a| match a.snap {
+            cadcraft_engine::doc::AssocSnap::Vertex { index } => Some(index),
+            _ => None,
+        })
+        .collect();
+    v.sort_unstable();
+    v
+}
+
+#[test]
+fn trimming_a_polyline_drops_the_vertex_attachments_of_its_dimension() {
+    let mut s = Session::new();
+    let (pl, d) = polyline_with_dim(&mut s, [100.0, 0.0], [100.0, 50.0], [120.0, 25.0]);
+    assert_eq!(vertex_attachments(&s, d, pl), vec![2, 3], "{:?}", dim(&s, d).assoc);
+    let before = dim(&s, d);
+    let cutter = line(&mut s, [75.0, -10.0], [75.0, 10.0]);
+    let r = s.execute("trim", &json!({ "handle": pl.hex(), "pick": [10, 0], "edges": [cutter.hex()] })).unwrap();
+    assert_eq!(handles(&r), vec![pl], "{r}");
+    let dm = dim(&s, d);
+    assert!(dm.assoc.is_empty(), "no attachment is left: {:?}", dm.assoc);
+    assert_eq!((dm.p13, dm.p14), (before.p13, before.p14), "the points stay");
+    assert_eq!(measured(&s, d), "50.0000");
+}
+
+#[test]
+fn a_cut_that_removes_the_attached_vertices_drops_them_too() {
+    let mut s = Session::new();
+    let (pl, d) = polyline_with_dim(&mut s, [0.0, 0.0], [50.0, 0.0], [25.0, -20.0]);
+    assert_eq!(vertex_attachments(&s, d, pl), vec![0, 1], "{:?}", dim(&s, d).assoc);
+    let before = dim(&s, d);
+    let cutter = line(&mut s, [75.0, -10.0], [75.0, 10.0]);
+    s.execute("trim", &json!({ "handle": pl.hex(), "pick": [10, 0], "edges": [cutter.hex()] })).unwrap();
+    let dm = dim(&s, d);
+    assert!(dm.assoc.is_empty(), "{:?}", dm.assoc);
+    assert_eq!((dm.p13, dm.p14), (before.p13, before.p14));
+    assert_eq!(measured(&s, d), "50.0000");
+}
+
+/// Safe and the same as before the object was kept: even a trim at the end, which leaves the
+/// early vertices where they were, drops the vertex attachments.
+#[test]
+fn an_end_trim_of_a_polyline_drops_the_vertex_attachments_as_well() {
+    let mut s = Session::new();
+    let (pl, d) = polyline_with_dim(&mut s, [0.0, 0.0], [50.0, 0.0], [25.0, -20.0]);
+    assert_eq!(vertex_attachments(&s, d, pl), vec![0, 1]);
+    let cutter = line(&mut s, [90.0, 25.0], [110.0, 25.0]);
+    s.execute("trim", &json!({ "handle": pl.hex(), "pick": [100, 45], "edges": [cutter.hex()] })).unwrap();
+    assert!(dim(&s, d).assoc.is_empty(), "{:?}", dim(&s, d).assoc);
+    assert_eq!(measured(&s, d), "50.0000");
+}
+
+#[test]
+fn undoing_the_trim_restores_the_polyline_and_its_attachments() {
+    let mut s = Session::new();
+    let (pl, d) = polyline_with_dim(&mut s, [100.0, 0.0], [100.0, 50.0], [120.0, 25.0]);
+    let cutter = line(&mut s, [75.0, -10.0], [75.0, 10.0]);
+    s.execute("trim", &json!({ "handle": pl.hex(), "pick": [10, 0], "edges": [cutter.hex()] })).unwrap();
+    assert!(dim(&s, d).assoc.is_empty());
+    // `Session::undo` (the undo stack itself, as the line test above).
+    s.undo().unwrap();
+    match &s.doc().unwrap().entity(pl).unwrap().kind {
+        EntityKind::LwPolyline(p) => assert_eq!(p.vertices.len(), 4),
+        k => panic!("not a polyline: {k:?}"),
+    }
+    assert_eq!(vertex_attachments(&s, d, pl), vec![2, 3], "{:?}", dim(&s, d).assoc);
+    assert_eq!(measured(&s, d), "50.0000");
+}
+
+/// A trimmed polyline with its dimension: the session, the polyline and the dimension.
+fn trimmed_polyline() -> (Session, Handle, Handle) {
+    let mut s = Session::new();
+    let (pl, d) = polyline_with_dim(&mut s, [100.0, 0.0], [100.0, 50.0], [120.0, 25.0]);
+    let cutter = line(&mut s, [75.0, -10.0], [75.0, 10.0]);
+    s.execute("trim", &json!({ "handle": pl.hex(), "pick": [10, 0], "edges": [cutter.hex()] })).unwrap();
+    assert!(dim(&s, d).assoc.is_empty());
+    (s, pl, d)
+}
+
+/// The polyline is whole again, the dimension is attached to its vertices 2 and 3 and measures 50.
+fn assert_restored(s: &Session, pl: Handle, d: Handle) {
+    match &s.doc().unwrap().entity(pl).unwrap().kind {
+        EntityKind::LwPolyline(p) => assert_eq!(p.vertices.len(), 4),
+        k => panic!("not a polyline: {k:?}"),
+    }
+    assert_eq!(vertex_attachments(s, d, pl), vec![2, 3], "{:?}", dim(s, d).assoc);
+    assert_eq!(measured(s, d), "50.0000");
+}
+
+/// The trim is applied again: the attachments to the polyline's vertices are gone, the dimension
+/// keeps its points and its measurement.
+fn assert_trimmed(s: &Session, pl: Handle, d: Handle) {
+    assert!(vertex_attachments(s, d, pl).is_empty(), "{:?}", dim(s, d).assoc);
+    assert_eq!(measured(s, d), "50.0000");
+}
+
+/// UNDO and REDO swap in a stored drawing, which is already consistent: the dimension pass must
+/// not compare it with the drawing it replaced, where the polyline keeps its handle but its
+/// vertex 3 is another point.
+#[test]
+fn undo_through_the_command_restores_the_attachments() {
+    let (mut s, pl, d) = trimmed_polyline();
+    s.execute("u", &json!({})).unwrap();
+    assert_restored(&s, pl, d);
+    s.execute("redo", &json!({})).unwrap();
+    assert_trimmed(&s, pl, d);
+}
+
+#[test]
+fn undo_at_the_command_line_restores_the_attachments() {
+    let (mut s, pl, d) = trimmed_polyline();
+    s.cmdline("u").unwrap();
+    assert_restored(&s, pl, d);
+    s.cmdline("redo").unwrap();
+    assert_trimmed(&s, pl, d);
+}
+
+#[test]
+fn undo_with_a_count_restores_the_attachments() {
+    let (mut s, pl, d) = trimmed_polyline();
+    s.execute("undo", &json!({ "count": 1 })).unwrap();
+    assert_restored(&s, pl, d);
+    s.execute("redo", &json!({ "count": 1 })).unwrap();
+    assert_trimmed(&s, pl, d);
+}
+
+#[test]
+fn undo_back_and_mredo_restore_the_attachments() {
+    let (mut s, pl, d) = trimmed_polyline();
+    s.execute("undo", &json!({ "mode": "back", "confirm": true })).unwrap();
+    assert!(s.doc().unwrap().entity(pl).is_none(), "everything is undone");
+    s.execute("mredo", &json!({ "all": true })).unwrap();
+    assert_trimmed(&s, pl, d);
+    s.execute("u", &json!({})).unwrap();
+    assert_restored(&s, pl, d);
+    s.execute("mredo", &json!({ "count": 1 })).unwrap();
+    assert_trimmed(&s, pl, d);
+}

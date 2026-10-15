@@ -938,6 +938,7 @@ pub(crate) fn trim(s: &mut Session, h: Handle, pick: Vec2, edges: Edges) -> Resu
         EntityKind::LwPolyline(p) => trim_polyline(p, &cut, pick)?,
         k => super::modify2::trim_other(k, &cut, pick)?,
     };
+    let is_pline = matches!(e.kind, EntityKind::LwPolyline(_));
     let common = e.common.clone();
     let space = s.space();
     let d = s.doc_mut()?;
@@ -948,6 +949,12 @@ pub(crate) fn trim(s: &mut Session, h: Handle, pick: Vec2, edges: Edges) -> Resu
     // reactors follow it. Nothing left: the object goes.
     match pieces.next() {
         Some(k) => {
+            // A polyline's vertices are renumbered by the cut, so a dimension attached to one
+            // would follow the wrong vertex: those attachments are dropped (the dimension keeps
+            // its points), before the piece is written so `assoc::update` never sees them.
+            if is_pline {
+                drop_vertex_assoc(d, h);
+            }
             d.modify_entity(h, |e| e.kind = k)?;
             out.push(h);
         }
@@ -963,6 +970,26 @@ pub(crate) fn trim(s: &mut Session, h: Handle, pick: Vec2, edges: Edges) -> Resu
         }
     }
     Ok(out)
+}
+
+/// Drop every `Vertex` attachment that a dimension (model space or a layout) holds on the
+/// polyline `h`. One pass over the dimensions; nothing is written when there is none.
+fn drop_vertex_assoc(d: &mut cadcraft_doc::Drawing, h: Handle) {
+    use cadcraft_doc::AssocSnap;
+    let on_h = |a: &cadcraft_doc::DimAssoc| a.handle == h && matches!(a.snap, AssocSnap::Vertex { .. });
+    let stores = std::iter::once(&d.model).chain(d.layouts.iter().map(|l| &l.entities));
+    let hits: Vec<Handle> = stores
+        .flat_map(|st| st.iter())
+        .filter(|e| matches!(&e.kind, EntityKind::Dimension(dm) if dm.assoc.iter().any(on_h)))
+        .map(|e| e.handle)
+        .collect();
+    for dh in hits {
+        let _ = d.modify_entity(dh, |e| {
+            if let EntityKind::Dimension(dm) = &mut e.kind {
+                dm.assoc.retain(|a| !on_h(a));
+            }
+        });
+    }
 }
 
 /// Sub-polyline between length parameters `a` and `b` (open polylines).
