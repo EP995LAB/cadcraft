@@ -56,7 +56,7 @@ fn circle_of(s: &Session, h: &str) -> (Vec2, f64) {
 
 fn near_angle(a: f64, b: f64) -> bool {
     let d = (a - b).rem_euclid(std::f64::consts::TAU);
-    d < 1e-9 || d > std::f64::consts::TAU - 1e-9
+    !(1e-9..=std::f64::consts::TAU - 1e-9).contains(&d)
 }
 
 fn assert_arc(s: &Session, h: &str, start: f64, end: f64) {
