@@ -295,7 +295,17 @@ fn damaged_arc_dimensions_do_not_panic() {
             "0 SECTION\n2 ENTITIES\n0 ARC_DIMENSION\n8 0\n100 AcDbDimension\n10 1\n20 1\n70 5\n100 AcDbArcDimension\n{body}0 ENDSEC\n0 EOF\n"
         ));
         if let Ok(d) = read_dxf(src.as_bytes()) {
-            let _ = read_dxf(write_dxf(&d).as_bytes());
+            // What reads must save and read again, as the same arc-length dimensions with their
+            // blocks.
+            let out = write_dxf(&d);
+            let back = read_dxf(out.as_bytes()).unwrap_or_else(|e| panic!("body {body:?}: the saved file does not read back: {e}\n{out}"));
+            assert_eq!(dims(&back).len(), dims(&d).len(), "body {body:?}: dimensions before and after\n{out}");
+            for (_, dm) in dims(&back) {
+                assert_eq!(dm.kind, DimKind::ArcLength, "body {body:?}\n{out}");
+                if let Some(b) = &dm.block {
+                    assert!(back.block(b).is_some(), "body {body:?}: the dimension names block {b}, which is not in the file\n{out}");
+                }
+            }
         }
     }
 }

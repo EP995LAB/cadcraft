@@ -98,3 +98,53 @@ fn mirror_keeps_the_arc_length_of_an_arc_length_dimension() {
     assert_eq!(after.kind, DimKind::ArcLength);
     assert!((measure(&after) - 31.4159).abs() < 1e-3, "after MIRROR the dimension measures {}", measure(&after));
 }
+
+/// The ends of an arc-length dimension can be attached to a line that touches the arc (an end
+/// picked on the line). MIRROR swaps the dimension's ends (counter-clockwise from 13 to 14), and a
+/// line's ends don't swap as an arc's do: once the attachments are followed after the command, the
+/// dimension must still measure the same arc, not the rest of the circle.
+#[test]
+fn mirror_keeps_the_arc_length_when_an_end_is_attached_to_a_line() {
+    use cadcraft_engine::doc::{AssocSnap, DimAssoc};
+    let mut s = session();
+    s.execute("line", &json!({ "points": [[320, 150], [340, 150]] })).unwrap();
+    let d = s.doc().unwrap();
+    let line = d.model.iter().find(|e| matches!(e.kind, EntityKind::Line(_))).map(|e| e.handle).unwrap();
+    let arc = d.model.iter().find(|e| matches!(e.kind, EntityKind::Arc(_))).map(|e| e.handle).unwrap();
+    let (h, before) = the_dimension(&s);
+    assert!((before.p13.x - 320.0).abs() < 1e-9 && (before.p13.y - 150.0).abs() < 1e-9, "p13 {:?}", before.p13);
+    // p13 on the line's start (the arc's start too), p14 on the arc's end.
+    s.doc_mut()
+        .unwrap()
+        .modify_entity(h, |e| {
+            if let EntityKind::Dimension(dm) = &mut e.kind {
+                dm.assoc = vec![
+                    DimAssoc { point: "p13".into(), handle: line, snap: AssocSnap::Start },
+                    DimAssoc { point: "p14".into(), handle: arc, snap: AssocSnap::End },
+                ];
+            }
+        })
+        .unwrap();
+    let style = s.doc().unwrap().dim_style("Standard").cloned().unwrap_or_default();
+    let measure = |d: &cadcraft_engine::doc::Dimension| cadcraft_render::dimension_geometry(d, &style, 1.0).measurement;
+    assert!((measure(&before) - 31.4159).abs() < 1e-3);
+    let all: Vec<String> = s.doc().unwrap().model.iter().map(|e| e.handle.hex()).collect();
+    s.execute("mirror", &json!({ "handles": all, "p1": [0, 0], "p2": [0, 10], "erase": true })).unwrap();
+    let (_, after) = the_dimension(&s);
+    assert!(
+        (measure(&after) - 31.4159).abs() < 1e-3,
+        "after MIRROR the dimension measures {} (p13 {:?}, p14 {:?})",
+        measure(&after),
+        after.p13,
+        after.p14
+    );
+    // Both ends stay attached, each to where it now is: p14 on the line's start, p13 on the
+    // mirrored arc's start (the arc runs the other way now).
+    let mut assoc: Vec<(String, bool, AssocSnap)> = after.assoc.iter().map(|a| (a.point.clone(), a.handle == line, a.snap.clone())).collect();
+    assoc.sort_by(|x, y| x.0.cmp(&y.0));
+    assert_eq!(assoc, [("p13".to_string(), false, AssocSnap::Start), ("p14".to_string(), true, AssocSnap::Start)], "{:?}", after.assoc);
+    // And the line still carries p14: moving the line moves that end.
+    s.execute("move", &json!({ "handles": [line.hex()], "from": [0, 0], "to": [0, 5] })).unwrap();
+    let (_, moved) = the_dimension(&s);
+    assert!((moved.p14.x + 320.0).abs() < 1e-9 && (moved.p14.y - 155.0).abs() < 1e-9, "p14 {:?} did not follow the line", moved.p14);
+}
