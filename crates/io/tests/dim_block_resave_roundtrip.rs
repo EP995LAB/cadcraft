@@ -327,6 +327,14 @@ fn a_standard_arrow_block_keeps_the_seed_over_three_cycles() {
     assert_eq!(record_handle(&d2, "LAYER", "0"), record_handle(&d1, "LAYER", "0"));
     assert_eq!(d2, d1, "second reopen-and-save changed the file");
     assert_eq!(d3, d2, "third reopen-and-save changed the file");
+    // Reopened, the third save has the seed the first one reopened with. (Not `d.handseed`: the
+    // first save generates the dimension's `*D` block, which is kept, unlike the arrow block.)
+    let seed = |f: &str| cadcraft_io::read_dxf(f.as_bytes()).unwrap().handseed;
+    let first = seed(&d0);
+    assert!(first > d.handseed, "the first save's seed {first} counts the *D block");
+    for (i, f) in [&d1, &d2, &d3].into_iter().enumerate() {
+        assert_eq!(seed(f), first, "the seed read back after save {}", i + 1);
+    }
 }
 
 #[test]
