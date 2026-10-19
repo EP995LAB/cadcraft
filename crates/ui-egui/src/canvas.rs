@@ -3054,7 +3054,10 @@ mod block_double_click_tests {
     fn an_associative_array_is_not_a_block_reference_to_open() {
         let mut app = app_with_a_door();
         let l = app.session.execute("line", &json!({ "points": [[0, -20], [10, -20]] })).unwrap()["handles"][0].clone();
-        let r = app.session.execute("arrayrect", &json!({ "handles": [l], "rows": 1, "cols": 3, "rowSpacing": 1, "colSpacing": 20, "associative": true })).unwrap();
+        let r = app
+            .session
+            .execute("arrayrect", &json!({ "handles": [l], "rows": 1, "cols": 3, "rowSpacing": 1, "colSpacing": 20, "associative": true }))
+            .unwrap();
         assert!(r["handle"].is_string(), "{r}");
         let door = super::block_reference_at(&app, Vec2::new(4.0, 0.0), 10.0);
         assert_eq!(door.map(|(_, n)| n).as_deref(), Some("Door"));
