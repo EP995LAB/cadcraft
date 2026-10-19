@@ -2232,8 +2232,9 @@ fn hatch_at(app: &CadApp, w: Vec2, scale: f64) -> Option<Handle> {
 }
 
 /// The block reference under world point `w` within the pick aperture, with the block the Block
-/// Editor would open for it; `None` for anything else, for an external reference (it is not
-/// edited in the Block Editor) and while the Block Editor is open.
+/// Editor would open for it; `None` for anything else, for a block the Block Editor refuses (an
+/// external reference, an anonymous block such as an associative array's) and while the Block
+/// Editor is open.
 fn block_reference_at(app: &CadApp, w: Vec2, scale: f64) -> Option<(Handle, String)> {
     let st = app.session.state().ok()?;
     if st.block_edit.is_some() {
@@ -2242,8 +2243,7 @@ fn block_reference_at(app: &CadApp, w: Vec2, scale: f64) -> Option<(Handle, Stri
     let aperture = app.session.settings.pickbox.max(1.0) * 1.5 / scale.max(1e-12);
     let h = cadcraft_engine::select::pick(&st.doc, &st.edit_space(), w, aperture)?;
     let name = cadcraft_engine::blockedit::reference_block(&st.doc, h)?;
-    let block = st.doc.block(&name)?;
-    (block.xref_path.is_none() && !name.contains('|')).then_some((h, name))
+    (cadcraft_engine::blockedit::refusal(&st.doc, &name).is_none() && !name.contains('|')).then_some((h, name))
 }
 
 /// Half the side of the pick box: the pick aperture (PICKBOX × 1.5 pixels, as `select::pick` is
@@ -3046,6 +3046,20 @@ mod block_double_click_tests {
         double_click(&mut app, Vec2::new(4.0, 2.5));
         assert_ne!(app.ui.dialog.as_deref(), Some("bedit"));
         assert!(app.session.state().unwrap().block_editor().is_none());
+    }
+
+    /// An associative array is a reference to an anonymous block the Block Editor refuses: not a
+    /// block reference a double-click opens, unlike the Door.
+    #[test]
+    fn an_associative_array_is_not_a_block_reference_to_open() {
+        let mut app = app_with_a_door();
+        let l = app.session.execute("line", &json!({ "points": [[0, -20], [10, -20]] })).unwrap()["handles"][0].clone();
+        let r = app.session.execute("arrayrect", &json!({ "handles": [l], "rows": 1, "cols": 3, "rowSpacing": 1, "colSpacing": 20, "associative": true })).unwrap();
+        assert!(r["handle"].is_string(), "{r}");
+        let door = super::block_reference_at(&app, Vec2::new(4.0, 0.0), 10.0);
+        assert_eq!(door.map(|(_, n)| n).as_deref(), Some("Door"));
+        assert_eq!(super::block_reference_at(&app, Vec2::new(4.0, -20.0), 10.0), None, "the array");
+        assert_eq!(super::block_reference_at(&app, Vec2::new(4.0, 5.0), 10.0), None, "a line");
     }
 
     #[test]
