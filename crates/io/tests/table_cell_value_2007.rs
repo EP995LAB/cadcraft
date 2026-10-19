@@ -160,6 +160,33 @@ fn table_dxf(cells: &str) -> String {
     )
 }
 
+/// Save `d` with the public API (DXF 2018), reopen it and check that the first table's cell texts
+/// came back as they were, and that the saved ACAD_TABLE names (group 2) a block the file defines.
+fn assert_saves_and_reopens(d: &Drawing, what: &str) {
+    let texts = |t: &Table| t.cells.iter().map(|r| r.iter().map(|c| c.text.clone()).collect::<Vec<_>>()).collect::<Vec<_>>();
+    let bytes = save(d, Version::R2018, false);
+    let back = read(&bytes, "t.dxf").unwrap_or_else(|e| panic!("{what}: the saved file does not read back: {e}"));
+    assert_eq!(texts(&first_table(&back)), texts(&first_table(d)), "{what}: cell texts after save and reopen");
+    let tags = cadcraft_dxf::parse(&bytes).unwrap();
+    let ents = tags.iter().position(|t| t.code == 2 && t.str() == "ENTITIES").unwrap();
+    let start = ents + tags[ents..].iter().position(|t| t.code == 0 && t.str() == "ACAD_TABLE").unwrap();
+    let end = start + 1 + tags[start + 1..].iter().position(|t| t.code == 0).unwrap();
+    let block = tags[start..end].iter().find(|t| t.code == 2).map(|t| t.str().to_string());
+    let block = block.unwrap_or_else(|| panic!("{what}: the saved ACAD_TABLE names no block"));
+    // Each BLOCK record's own name (its first group 2).
+    let mut defined = Vec::new();
+    let mut in_block = false;
+    for t in &tags {
+        if t.code == 0 {
+            in_block = t.str() == "BLOCK";
+        } else if in_block && t.code == 2 {
+            defined.push(t.str().to_string());
+            in_block = false;
+        }
+    }
+    assert!(defined.contains(&block), "{what}: the table names block {block}, which the file does not define: {defined:?}");
+}
+
 /// Cells written the 2007 way by other programs: the text read is the value block's 302 (with
 /// its 303 chunks) when it has one, else the block's group 1 value (the DWG bridge's form), else
 /// the plain groups; a plain 302 with a different plain group 1 reads as the 302.
@@ -174,6 +201,7 @@ fn text_in_the_value_block_is_read() {
     let d = read(dxf.as_bytes(), "t.dxf").unwrap();
     let texts: Vec<String> = first_table(&d).cells[0].iter().map(|c| c.text.clone()).collect();
     assert_eq!(texts, ["first-second", "bridge", "plain", "formatted"]);
+    assert_saves_and_reopens(&d, "value blocks of other programs");
 }
 
 /// Broken value blocks never panic: a block with no end, an end with no begin, chunks alone,
@@ -188,7 +216,10 @@ fn broken_value_blocks_do_not_panic() {
         "171\n1\n301\nCELL_VALUE\n302\nw\n1001\nCADCRAFT\n1000\nTABLE\n",
         "171\n1\n301\n\n302\n\n303\n\n304\n\n",
     ] {
-        let _ = read(table_dxf(cells).as_bytes(), "t.dxf");
+        // Refusing such a file is allowed; what reads must save and reopen as it read.
+        if let Ok(d) = read(table_dxf(cells).as_bytes(), "t.dxf") {
+            assert_saves_and_reopens(&d, &format!("broken value block {cells:?}"));
+        }
     }
 }
 
