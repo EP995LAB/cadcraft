@@ -168,13 +168,7 @@ pub(crate) fn pick_with(d: &Drawing, space: &Space, ix: &Option<std::sync::Arc<S
         if !infinite && !bounds_of(d, e, known).expand(aperture).intersects(&probe) {
             continue;
         }
-        let dist = match &e.kind {
-            // Only the text near the point is laid out.
-            EntityKind::Insert(_) | EntityKind::Dimension(_) | EntityKind::MLeader(_) => {
-                Drawn::of(d, e, aperture / 4.0, Some(probe), &mut cx).distance(d, e, p)
-            }
-            _ => entity_distance(d, e, p, aperture / 4.0),
-        };
+        let dist = pick_distance(d, e, p, &probe, aperture, &mut cx);
         if dist <= aperture && best.is_none_or(|(bd, _)| dist < bd - 1e-12) {
             best = Some((dist, e.handle));
             if dist == 0.0 {
@@ -185,15 +179,27 @@ pub(crate) fn pick_with(d: &Drawing, space: &Space, ix: &Option<std::sync::Arc<S
     best.map(|(_, h)| h)
 }
 
+/// How far a click at `p` (within `probe`, the pick box) is from what `e` draws, as [`pick`]
+/// measures it: for blocks, dimensions and multileaders only the text near the point is laid
+/// out, within the budget `cx` keeps for the whole call.
+fn pick_distance(d: &Drawing, e: &Entity, p: Vec2, probe: &Bounds2, aperture: f64, cx: &mut TextCx) -> f64 {
+    match &e.kind {
+        EntityKind::Insert(_) | EntityKind::Dimension(_) | EntityKind::MLeader(_) => Drawn::of(d, e, aperture / 4.0, Some(*probe), cx).distance(d, e, p),
+        _ => entity_distance(d, e, p, aperture / 4.0),
+    }
+}
+
 /// Every entity within `aperture` of `p`, nearest first and topmost among equals (so the first is
 /// what [`pick`] chooses): the objects selection cycling lists.
 pub fn pick_all(d: &Drawing, space: &Space, p: Vec2, aperture: f64) -> Vec<Handle> {
     let ix = spatial::index(d, space);
     let probe = Bounds2::new(p, p).expand(aperture);
     let Some(cands) = candidates(d, space, &ix, &probe.expand(aperture), true, true) else { return Vec::new() };
+    // Measured as `pick` measures, so the first is what it picks (and text is laid out once).
+    let mut cx = TextCx::new();
     let mut hits: Vec<(f64, Handle)> = cands
         .filter(|(e, known)| selectable(d, e) && (is_infinite(e) || bounds_of(d, e, *known).expand(aperture).intersects(&probe)))
-        .map(|(e, _)| (entity_distance(d, e, p, aperture / 4.0), e.handle))
+        .map(|(e, _)| (pick_distance(d, e, p, &probe, aperture, &mut cx), e.handle))
         .filter(|(dist, _)| *dist <= aperture)
         .collect();
     hits.sort_by(|a, b| a.0.total_cmp(&b.0));
