@@ -184,7 +184,9 @@ pub(crate) fn pick_with(d: &Drawing, space: &Space, ix: &Option<std::sync::Arc<S
 /// out, within the budget `cx` keeps for the whole call.
 fn pick_distance(d: &Drawing, e: &Entity, p: Vec2, probe: &Bounds2, aperture: f64, cx: &mut TextCx) -> f64 {
     match &e.kind {
-        EntityKind::Insert(_) | EntityKind::Dimension(_) | EntityKind::MLeader(_) => Drawn::of(d, e, aperture / 4.0, Some(*probe), cx).distance(d, e, p),
+        EntityKind::Insert(_) | EntityKind::Dimension(_) | EntityKind::MLeader(_) => {
+            Drawn::of(d, e, aperture / 4.0, Some(*probe), cx).distance(d, e, p)
+        }
         _ => entity_distance(d, e, p, aperture / 4.0),
     }
 }
