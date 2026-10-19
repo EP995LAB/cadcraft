@@ -21,6 +21,8 @@ mod graphics;
 mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
+#[cfg(any(target_os = "macos", test))]
+mod open_documents;
 mod spacemouse;
 mod system_animations;
 mod workspace;
@@ -39,6 +41,9 @@ struct App {
     workspace_error: Option<String>,
     #[cfg(target_os = "macos")]
     native_menu: Option<native_menu::NativeMenu>,
+    /// Drawings and quit requests from Finder, the Dock and `open -a` (see `open_documents`).
+    #[cfg(target_os = "macos")]
+    apple_events: fmv_macos_events::Inbox,
 }
 
 impl App {
@@ -74,6 +79,7 @@ impl eframe::App for App {
             if let Some(m) = &mut self.native_menu {
                 m.poll(&mut self.cad, ctx);
             }
+            open_documents::mac::poll(&self.apple_events, &mut self.cad, ctx);
         }
         self.cad.system_animations = self.system_animations.current();
         self.cad.logic(ctx);
@@ -304,6 +310,12 @@ fn main() -> eframe::Result {
             b.with_x11();
         }));
     }
+    // Registered before the event loop starts, so it catches the Finder event that launched the app
+    // as well as later ones. Lives until the event loop returns; the app creator only borrows it.
+    #[cfg(target_os = "macos")]
+    let apple_events = open_documents::mac::AppleEvents::install();
+    #[cfg(target_os = "macos")]
+    let apple_events = &apple_events;
     eframe::run_native(
         "CADCraft",
         options,
@@ -356,6 +368,14 @@ fn main() -> eframe::Result {
             for f in &files {
                 app.open_path(f);
             }
+            // Start reading the drawings that launched the app before the first frame; later
+            // events arrive through the same inbox.
+            #[cfg(target_os = "macos")]
+            let apple_events = {
+                let inbox = apple_events.connect(&cc.egui_ctx);
+                open_documents::mac::poll(&inbox, &mut app, &cc.egui_ctx);
+                inbox
+            };
             if app.session.docs.is_empty() {
                 app.session.new_drawing(false);
             }
@@ -372,6 +392,8 @@ fn main() -> eframe::Result {
                 workspace_error,
                 #[cfg(target_os = "macos")]
                 native_menu: None,
+                #[cfg(target_os = "macos")]
+                apple_events,
             }))
         }),
     )
