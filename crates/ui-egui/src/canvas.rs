@@ -1532,6 +1532,20 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         hatch_dialog = true;
     }
 
+    // Double-click a block reference (no command running, the Block Editor closed) to open the
+    // Edit Block Definition dialog with its block chosen. Like any idle double-click it starts no
+    // grip edit (`idle_dbl` below).
+    if inside
+        && dbl_primary
+        && !hatch_dialog
+        && app.session.running.is_none()
+        && let Some(hp) = hover_pos
+        && let Some((h, name)) = block_reference_at(app, xf.to_world(hp), scale)
+    {
+        app.session.set_selection(vec![h]);
+        crate::bedit::open_on(app, &name);
+    }
+
     // While a command asks for a point, every click places one, however fast the drafting (#815).
     // egui drops a click whose button comes up a few pixels from where it went down (a drag to it),
     // and eframe hands a slow frame's clicks over together, which egui reports as one.
@@ -2215,6 +2229,21 @@ fn hatch_at(app: &CadApp, w: Vec2, scale: f64) -> Option<Handle> {
     let aperture = app.session.settings.pickbox.max(1.0) * 1.5 / scale.max(1e-12);
     let h = cadcraft_engine::select::pick(&st.doc, &st.edit_space(), w, aperture)?;
     matches!(st.doc.entity(h)?.kind, cadcraft_doc::EntityKind::Hatch(_)).then_some(h)
+}
+
+/// The block reference under world point `w` within the pick aperture, with the block the Block
+/// Editor would open for it; `None` for anything else, for an external reference (it is not
+/// edited in the Block Editor) and while the Block Editor is open.
+fn block_reference_at(app: &CadApp, w: Vec2, scale: f64) -> Option<(Handle, String)> {
+    let st = app.session.state().ok()?;
+    if st.block_edit.is_some() {
+        return None;
+    }
+    let aperture = app.session.settings.pickbox.max(1.0) * 1.5 / scale.max(1e-12);
+    let h = cadcraft_engine::select::pick(&st.doc, &st.edit_space(), w, aperture)?;
+    let name = cadcraft_engine::blockedit::reference_block(&st.doc, h)?;
+    let block = st.doc.block(&name)?;
+    (block.xref_path.is_none() && !name.contains('|')).then_some((h, name))
 }
 
 /// Half the side of the pick box: the pick aperture (PICKBOX × 1.5 pixels, as `select::pick` is
@@ -2950,5 +2979,81 @@ mod hatch_pick_tests {
         assert_eq!(app.hatch_dlg.as_ref().map(|s| s.edit.iter().map(|h| h.hex()).collect::<Vec<_>>()), Some(vec![hx]));
         // The double-click (at the hatch's centre grip) only opens the dialog: no grip edit.
         assert!(app.session.running.is_none(), "{:?}", app.session.running.as_ref().map(|r| r.machine.name()));
+    }
+}
+
+#[cfg(test)]
+mod block_double_click_tests {
+    use cadcraft_engine::Session;
+    use cadcraft_geom::Vec2;
+    use serde_json::json;
+
+    use crate::{CadApp, Services};
+
+    /// A drawing with a "Door" block (one line) inserted at the origin, zoomed to it.
+    fn app_with_a_door() -> CadApp {
+        let mut app = CadApp::new(Session::new(), Services::default());
+        let l = app.session.execute("line", &json!({ "points": [[0, 0], [10, 0]] })).unwrap()["handles"][0].clone();
+        app.session.execute("block", &json!({ "name": "Door", "base": [0, 0], "handles": [l], "keep": "delete" })).unwrap();
+        app.session.execute("insert", &json!({ "name": "Door", "at": [0, 0] })).unwrap();
+        app.session.execute("line", &json!({ "points": [[0, 5], [10, 5]] })).unwrap();
+        app.session.set_selection(Vec::new());
+        let _ = app.session.zoom_extents();
+        app
+    }
+
+    /// Double-click world point `w`: the frames the hatch test plays.
+    fn double_click(app: &mut CadApp, w: Vec2) {
+        let ctx = egui::Context::default();
+        let screen = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0)));
+        let frame = |app: &mut CadApp, events: Vec<egui::Event>, time: f64| {
+            app.logic(&ctx);
+            let input = egui::RawInput { screen_rect: screen, events, time: Some(time), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| app.ui(ui));
+            out.textures_delta.clear();
+        };
+        frame(app, Vec::new(), 0.0);
+        let at = app.canvas.xf.unwrap().to_screen(w);
+        let button =
+            |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::default() };
+        frame(app, vec![egui::Event::PointerMoved(at)], 0.1);
+        frame(app, vec![button(true), button(false)], 0.2);
+        frame(app, vec![button(true), button(false)], 0.3);
+        frame(app, Vec::new(), 0.4);
+    }
+
+    #[test]
+    fn double_clicking_a_block_reference_opens_edit_block_definition_on_its_block() {
+        let mut app = app_with_a_door();
+        double_click(&mut app, Vec2::new(4.0, 0.0));
+        assert_eq!(app.ui.dialog.as_deref(), Some("bedit"));
+        assert_eq!(app.bedit.name, "Door");
+        // The dialog only: no grip edit, no Block Editor yet.
+        assert!(app.session.running.is_none(), "{:?}", app.session.running.as_ref().map(|r| r.machine.name()));
+        assert!(app.session.state().unwrap().block_editor().is_none());
+        // OK opens the Block Editor on that block.
+        assert!(crate::bedit::confirm(&mut app));
+        assert_eq!(app.session.state().unwrap().block_editor(), Some("Door"));
+    }
+
+    #[test]
+    fn double_clicking_anything_else_does_not_open_it() {
+        let mut app = app_with_a_door();
+        // A plain line.
+        double_click(&mut app, Vec2::new(4.0, 5.0));
+        assert_ne!(app.ui.dialog.as_deref(), Some("bedit"));
+        // Empty space.
+        double_click(&mut app, Vec2::new(4.0, 2.5));
+        assert_ne!(app.ui.dialog.as_deref(), Some("bedit"));
+        assert!(app.session.state().unwrap().block_editor().is_none());
+    }
+
+    #[test]
+    fn double_clicking_a_reference_inside_the_block_editor_does_not_open_it() {
+        let mut app = app_with_a_door();
+        app.session.execute("bedit", &json!({ "name": "<Current Drawing>" })).unwrap();
+        let _ = app.session.zoom_extents();
+        double_click(&mut app, Vec2::new(4.0, 0.0));
+        assert_ne!(app.ui.dialog.as_deref(), Some("bedit"));
     }
 }

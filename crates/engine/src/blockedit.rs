@@ -27,6 +27,13 @@ const UNDO_LABEL: &str = "Block Editor";
 /// The name the Block Editor gives the drawing itself (BEDIT `<Current Drawing>`).
 pub const CURRENT_DRAWING: &str = "<Current Drawing>";
 
+/// The block BEDIT opens for block reference `h`: the block it refers to, or for a dynamic block's
+/// reference shown through an anonymous block (`*U12`) the dynamic block. `None` when `h` is not a
+/// block reference.
+pub fn reference_block(d: &Drawing, h: cadcraft_doc::Handle) -> Option<String> {
+    crate::cmd::blocks::bedit::block_of(d, h)
+}
+
 /// Whether block `name` (or `*Model_Space`, a drawing's own) carries dynamic block data from
 /// another program: parameters and actions in the `ACAD_ENHANCEDBLOCK` dictionary of its
 /// BLOCK_RECORD table entry.
