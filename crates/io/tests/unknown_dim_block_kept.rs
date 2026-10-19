@@ -151,6 +151,24 @@ fn the_block_survives_a_second_save() {
     // Reopened, the dimension's block is there to be found.
     let d = read_dxf(twice.as_bytes()).unwrap();
     assert!(d.block("*D1").is_some(), "*D1 missing after two saves");
+    // The reopened ARC_DIMENSION still names *D1 in group 2, and *D1 still holds the fixture's
+    // line from (320, 150) to (330, 175).
+    let named: Vec<&str> = d
+        .model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EntityKind::Unknown(u) if u.dxf_type == "ARC_DIMENSION" => u.tags.iter().find(|t| t.code == 2).map(|t| t.value.trim()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(named, ["*D1"], "the reopened ARC_DIMENSION's group 2");
+    let lines: Vec<_> = d
+        .block("*D1")
+        .map(|b| {
+            b.entities.iter().filter_map(|e| if let EntityKind::Line(l) = &e.kind { Some((l.a.x, l.a.y, l.b.x, l.b.y)) } else { None }).collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(lines, [(320.0, 150.0, 330.0, 175.0)], "the line in the reopened *D1");
 }
 
 #[test]
